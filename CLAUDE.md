@@ -191,31 +191,47 @@ Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fall
 
 ### E — Integrar open source externo
 
-Investigacion completa en [`docs/investigacion-repos.md`](docs/investigacion-repos.md)
-(agosto 2026, datos verificados via API de GitHub). Ninguna fase anade dependencias:
-todo se vendoriza con su licencia, leyendo con stdlib.
+Investigacion completa, con sub-tareas y justificacion, en
+**[`docs/investigacion-repos.md`](docs/investigacion-repos.md)** (agosto 2026, datos
+verificados via API de GitHub y descarga directa de archivos, no de blogs).
 
-- [ ] **E1 — Catalogo local de simbolos** (FinanceDatabase, MIT). Ataca el fallo mas
-      documentado: Yahoo omite la cotizacion europea principal y `ticker_search` es
-      intermitente. CSV por mercado (`MCE.csv` Madrid = 216 KB) con `symbol, name, isin,
-      mic, currency, sector, country`. Verificado: `ITX.MC`, `SAN.MC`, `IBE.MC` presentes.
-      Sub-tareas E1a-E1f en el doc. Sustituye tambien la constante adivinada `OTC_CODES`.
-- [ ] **E2 — Indicadores tecnicos** (talipp, MIT, **`requirements.txt` vacio = cero
-      dependencias**). Vendorizar RSI/ATR/Bollinger/MACD; hoy `historical()` calcula
-      RSI y SMA a mano. Ojo: el test B4 exige entrada en `glosario.js` por cada etiqueta.
-- [ ] **E3 — Metricas de cartera** (formulas de quantstats, Apache-2.0). Sharpe, Sortino,
-      Calmar y comparativa contra benchmark (`^IBEX`).
-- [ ] **E4 — Senales y alertas** (absorbe "Alertas precio" del backlog). Describe hechos
-      ("RSI de ITX.MC bajo 30"), nunca recomienda. Respeta el limite de no asesoramiento.
-- [ ] **E5 — Ejecucion via broker** (`ib_async`, BSD-2, unica opcion con cobertura
-      europea). **REQUIERE DECISION PREVIA**: contradice § Limites ("sin asesoramiento",
-      "compra esto no") y rompe la regla de cero dependencias. Solo paper trading, y
-      actualizando antes esa seccion.
+E1-E5 **no anaden ninguna dependencia**: todo se vendoriza con su licencia y se lee con
+stdlib. Codigo de terceros va siempre con su `LICENSE` + `FUENTE.md` (repo, commit, fecha).
 
-Evitar por licencia virica o no libre: OpenBB y Ghostfolio (AGPL-3.0), Freqtrade y
-pysystemtrade (GPL-3.0), backtesting.py (AGPL-3.0), vectorbt (Commons Clause, **no es
-open source**). Muertos pese a las estrellas: maybe-finance (archivado), backtrader
-(sin commits desde 2024-08), zipline (sin commits desde 2024-02).
+Orden recomendado: `E1 -> E2 -> E5a -> E3 -> E4 -> E6`.
+
+- [ ] **E1 — Catalogo local de simbolos** — [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase) (MIT, push 2026-08-16, 30 commits/90d)
+  - [ ] E1a — vendorizar shards en `recursos/simbolos/` (**no** en `datos/`, que esta gitignored): `MCE PAR AMS MIL LSE GER FRA EBS LIS BRU STO CPH HEL OSL VIE ISE NMS NYQ` + OTC `OID PNK OQB OQX OBB`. <15 MB
+  - [ ] E1b — `mcp/symbols.py`: carga perezosa con `csv` de stdlib, indice por symbol y por tokens del name (reutilizar `_tokens()` que ya existe)
+  - [ ] E1c — `ticker_search` consulta local primero, Yahoo solo si no hay match. Elimina los 3 reintentos
+  - [ ] E1d — sustituir la constante adivinada `OTC_CODES` por clasificacion real del catalogo
+  - [ ] E1e — exponer `isin` y `mic` (desambigua `SAN` NYSE vs `SAN.MC` Madrid)
+  - [ ] E1f — tests: `ITX.MC`/`SAN.MC`/`IBE.MC` resueltos **sin red** (critico, no AVISO)
+- [ ] **E2 — Indicadores tecnicos** — [talipp](https://github.com/nardew/talipp) (MIT, **`requirements.txt` de 0 bytes = cero dependencias**)
+  - [ ] E2a — vendorizar solo lo necesario en `mcp/indicators.py`
+  - [ ] E2b — sustituir RSI/SMA manuales de `historical()`, **verificando equivalencia antes de borrar** (ojo: RSI de Wilder vs media simple)
+  - [ ] E2c — anadir ATR, Bollinger, MACD
+  - [ ] E2d — ampliar `_verdict()` (mantener `verde`/`ambar`/`rojo`: son sufijos de clase CSS)
+  - [ ] E2e — entradas nuevas en `glosario.js`. **El test B4 falla sin esto**
+- [ ] **E3 — Metricas de cartera** — formulas de [quantstats](https://github.com/ranaroussi/quantstats) (Apache-2.0) portadas a stdlib. Sharpe, Sortino, Calmar + benchmark `^IBEX`. **Decidir**: tasa libre de riesgo como parametro (`SEALOCK_RISK_FREE_RATE`), nunca constante escondida
+- [ ] **E4 — Senales y alertas** (absorbe "Alertas precio" del backlog). Tabla `alerts`, tools `alert_create`/`alerts_list`/`alert_delete`/`alert_toggle`, evaluacion en el refresco de 60s. **Describe hechos ("RSI de ITX.MC bajo 30"), nunca recomienda** — § Limites
+- [ ] **E5 — Punto en el tiempo** — concepto de [qlib](https://github.com/microsoft/qlib) (MIT), solo la idea
+  - [ ] E5a — **documentar la convencion antes de cualquier backtest**: al ver el cierre de T, se compra en T+1 y se vende en T+2, luego retorno = `T+2/T+1 - 1`, no `T+1/T`. Calcularlo mal produce backtests optimistas y falsos (lookahead bias). Barato ahora, caro despues: invalidaria resultados previos
+  - [ ] E5b — auditar `period_return_pct` y las plusvalias con esa convencion
+- [ ] **E6 — Ejecucion via broker** — [ib_async](https://github.com/ib-api-reloaded/ib_async) (BSD-2, unica con cobertura europea real, habla con TWS en localhost). **REQUIERE DECISION PREVIA**: contradice § Limites ("compra esto no") y § Principios (no es stdlib). Solo paper trading, actualizando antes esa seccion, y como extra opcional
+
+**Sobre qlib** (evaluado a fondo porque es el mas citado del sector): MIT y 47.731
+estrellas, pero **1 commit en 90 dias**, 6 en 180, 479 issues abiertas, y dependencias que
+incluyen **Redis y MongoDB** ademas de 23 paquetes. Orientado al mercado chino (baostock,
+CSI300). Se toma su convencion de punto en el tiempo (E5) y nada de codigo.
+
+**Evitar por licencia**: OpenBB y Ghostfolio (AGPL-3.0), Freqtrade y pysystemtrade
+(GPL-3.0), backtesting.py (AGPL-3.0), vectorbt (**Commons Clause: no es open source**).
+**Muertos pese a las estrellas**: maybe-finance (archivado 2025-07), backtrader (sin
+commits desde 2024-08), zipline (desde 2024-02).
+
+**Bots de trading**: el ecosistema es abrumadoramente cripto (Freqtrade, Jesse, Hummingbot)
+y no aplica a acciones en EUR. El camino realista es E4 (senales), no ejecucion automatica.
 
 ### Backlog adicional
 - [ ] **A6** — medir delay real en sesion
