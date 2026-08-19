@@ -1,0 +1,270 @@
+"use strict";
+
+/**
+ * Glosario de metricas financieras, en espanol llano. Fuente unica de verdad para
+ * los popovers explicativos (B2/B3) y para el centro de ayuda (bloque C).
+ *
+ * Cada entrada: titulo, que_es, como_leerlo, trampa, rango (valores tipicos),
+ * ideal (que se considera optimo). `alias` son los textos exactos que aparecen
+ * en la interfaz que deben resolver a esta entrada.
+ *
+ * NOTA: Rangos orientativos para empresas maduras cotizadas. Sectores como
+ * tecnologia, farmaceutica o bancaria tienen rangos propios muy distintos.
+ * Esto NO es consejo de inversion.
+ */
+const GLOSARIO = {
+  per: {
+    titulo: "PER",
+    alias: ["PER"],
+    que_es: "Anos de beneficio actual que costaria recuperar el precio de la accion.",
+    como_leerlo: "Alto = el mercado espera crecimiento. Compara solo dentro del mismo sector.",
+    trampa: "PER bajo casi nunca es ganga: senala un problema que el mercado ya conoce.",
+    rango: "<15 barato | 15-25 justo | >25 caro",
+    ideal: "10-20 para empresas maduras con beneficios estables",
+  },
+  per_forward: {
+    titulo: "PER futuro",
+    alias: ["PER fwd"],
+    que_es: "Igual que el PER, pero con el beneficio que se espera para el proximo ano.",
+    como_leerlo: "Si es mucho menor que el PER actual, el mercado espera beneficios crecer fuerte.",
+    trampa: "Es una estimacion de analistas, no un hecho. Puede fallar, y falla a menudo.",
+    rango: "Debe ser < PER actual si hay crecimiento esperado",
+    ideal: "Menor que PER trailing (implica crecimiento de beneficios)",
+  },
+  ev_ebitda: {
+    titulo: "EV/EBITDA",
+    alias: ["EV/EBITDA"],
+    que_es: "Valor total de la empresa (deuda incluida) entre su beneficio operativo bruto.",
+    como_leerlo: "Compara empresas con distinta deuda mejor que el PER, porque no depende de como se financian.",
+    trampa: "Ignora el capex: negocios que necesitan invertir mucho parecen mas baratos de lo que son.",
+    rango: "<10 barato | 10-15 justo | >15 caro",
+    ideal: "<12 para empresas maduras; <8 oportunidad interesante",
+  },
+  net_margin: {
+    titulo: "Margen neto",
+    alias: ["Margen neto"],
+    que_es: "Que porcentaje de cada euro vendido queda como beneficio, tras todos los gastos.",
+    como_leerlo: "Mas alto = mas eficiente convirtiendo ventas en beneficio. Compara dentro del sector.",
+    trampa: "Un margen puntualmente alto puede venir de un ingreso extraordinario, no del negocio recurrente.",
+    rango: "<5% debil | 5-15% aceptable | 15-25% fuerte | >25% excelente",
+    ideal: ">15% en la mayoria de sectores; >25% en software y farmaceutica",
+  },
+  roe: {
+    titulo: "ROE",
+    alias: ["ROE"],
+    que_es: "Beneficio anual entre el dinero propio (fondos propios) invertido en la empresa.",
+    como_leerlo: "Mide cuanto rendimiento saca la empresa a su propio capital.",
+    trampa: "Una empresa muy endeudada puede inflar el ROE sin ser mas rentable de verdad: mira tambien la deuda.",
+    rango: "<8% debil | 8-15% aceptable | >15% fuerte",
+    ideal: ">15% sostenido en el tiempo; >20% excelente",
+  },
+  market_cap: {
+    titulo: "Capitalizacion",
+    alias: ["Capitaliz.", "Capitalizacion"],
+    que_es: "Precio de una accion multiplicado por el numero total de acciones. El valor total en bolsa.",
+    como_leerlo: "Es el tamano de la empresa segun el mercado, no lo que vale su negocio en realidad.",
+    trampa: "En varios valores europeos Yahoo no la publica: se deriva del valor de empresa menos la deuda neta.",
+    rango: "Relativo: comparar con peers del mismo sector",
+    ideal: "Sin valor ideal absoluto; importa la relacion con beneficios y ventas",
+  },
+  net_debt: {
+    titulo: "Deuda neta",
+    alias: ["Deuda neta"],
+    que_es: "Deuda total menos la caja disponible. Lo que la empresa debe de verdad.",
+    como_leerlo: "Negativa = mas caja que deuda: posicion financiera solida.",
+    trampa: "Comparar en valor absoluto entre empresas de distinto tamano no dice nada: relacionala con EBITDA.",
+    rango: "Negativa = solida | 0-1x EBITDA saludable | 1-2x moderada | >3x riesgosa",
+    ideal: "Negativa o <1x EBITDA",
+  },
+  dividend_yield: {
+    titulo: "Rentabilidad por dividendo",
+    alias: ["Dividendo"],
+    que_es: "El dividendo anual por accion entre el precio actual, en porcentaje.",
+    como_leerlo: "Cuanto ingreso recurrente da la accion al precio de hoy, aparte de su subida o bajada.",
+    trampa: "Un dividendo muy alto puede anticipar un recorte: revisa el payout antes de fiarte.",
+    rango: "<2% bajo | 2-4% moderado | >4% alto",
+    ideal: ">3% sostenido; >5% investigar por que tan alto",
+  },
+  payout: {
+    titulo: "Payout",
+    alias: ["Payout"],
+    que_es: "Que porcentaje del beneficio se reparte como dividendo, en vez de reinvertirse.",
+    como_leerlo: "Por debajo del 60% suele ser sostenible. Por encima del 80%, el dividendo esta en riesgo.",
+    trampa: "Un payout superior al 100% = reparte mas de lo que gana: insostenible a medio plazo.",
+    rango: "<40% conservador | 40-60% moderado | 60-80% agresivo | >80% riesgoso",
+    ideal: "40-60% para empresas maduras que pagan dividendo",
+  },
+  rsi: {
+    titulo: "RSI",
+    alias: ["RSI 14"],
+    que_es: "Indicador tecnico de 0 a 100 que mide si una accion ha subido o bajado con fuerza recientemente.",
+    como_leerlo: "Por encima de 70 = sobrecomprada; por debajo de 30 = sobrevendida.",
+    trampa: "No predice el futuro, solo describe el pasado reciente. Sobrecomprada puede seguir subiendo.",
+    rango: "<30 sobrevendida | 30-70 neutral | >70 sobrecomprada",
+    ideal: "30-70 rango normal; extremos senalan posibles puntos de giro (no garantizados)",
+  },
+  volatility: {
+    titulo: "Volatilidad",
+    alias: ["Volatilidad"],
+    que_es: "Cuanto varia el precio de una accion, en porcentaje anualizado.",
+    como_leerlo: "Mas alta = movimientos de precio mas bruscos, en cualquier direccion.",
+    trampa: "Volatilidad no es lo mismo que riesgo de perder dinero para siempre.",
+    rango: "<15% baja | 15-30% moderada | >30% alta",
+    ideal: "<20% para empresas estables; aceptable hasta 25% en ciclicas",
+  },
+  max_drawdown: {
+    titulo: "Caida maxima",
+    alias: ["Max. caida"],
+    que_es: "La mayor perdida que hubiese sufrido quien compro en el peor momento del periodo.",
+    como_leerlo: "Mide el peor escenario historico, util para saber si aguantarias esa caida.",
+    trampa: "El pasado no garantiza el futuro: una caida futura puede ser mayor.",
+    rango: "<20% suave | 20-40% moderada | >40% severa",
+    ideal: "<25% en empresas estables; aceptable hasta 35% en ciclicas",
+  },
+  moving_averages: {
+    titulo: "Medias moviles",
+    alias: ["Media 50", "Media 200"],
+    que_es: "El precio medio de los ultimos 50 o 200 dias de cotizacion.",
+    como_leerlo: "Precio por encima de su media = tendencia reciente al alza. Por debajo, a la baja.",
+    trampa: "Son indicadores retrasados: describen lo que ya paso, no anticipan lo que va a pasar.",
+    rango: "Media 50 por encima de 200 = tendencia alcista (cruce dorado); al reves, bajista",
+    ideal: "Cruce dorado (50 > 200) senala momentum positivo; no es senal de compra sola",
+  },
+  dcf: {
+    titulo: "DCF (descuento de flujos de caja)",
+    alias: ["Valor DCF"],
+    que_es: "Estimacion del valor de una empresa sumando todo el dinero que va a generar en el futuro.",
+    como_leerlo: "Compara con el precio actual, pero mira siempre el rango de sensibilidad.",
+    trampa: "Extremadamente sensible a los supuestos: pequenos cambios dan valores muy distintos.",
+    rango: "Margen de seguridad >30% = oportunidad segun supuestos; >50% = muy atractivo",
+    ideal: "Margen de seguridad >25% con supuestos conservadores",
+  },
+  margin_of_safety: {
+    titulo: "Margen de seguridad",
+    alias: ["Margen seguridad"],
+    que_es: "Cuanto descuento hay entre el valor estimado y el precio actual, en porcentaje.",
+    como_leerlo: "Positivo = precio por debajo del valor estimado, segun esos supuestos.",
+    trampa: "Depende enteramente de los supuestos del DCF: no es un hecho objetivo.",
+    rango: "<0% sobrevalorada | 0-20% justa | 20-40% interesante | >40% ganga aparente",
+    ideal: ">25% con supuestos conservadores; >40% requiere investigar por que tan barata",
+  },
+  sensitivity: {
+    titulo: "Tabla de sensibilidad",
+    alias: ["sensibilidad"],
+    que_es: "Como cambia el valor estimado al variar el crecimiento y la tasa de descuento.",
+    como_leerlo: "Mira el rango completo, no solo la cifra central: te dice cuanto confiar.",
+    trampa: "Si el rango es enorme entre esquinas, el DCF no esta dando una respuesta fiable.",
+    rango: "Rango <50% entre esquinas = fiable; >100% = muy sensible a supuestos",
+    ideal: "Rango estrecho entre esquinas (poca sensibilidad a cambios de supuestos)",
+  },
+  graham: {
+    titulo: "Formulas de Graham",
+    alias: ["NUMERO GRAHAM", "FORMULA GRAHAM REVISADA", "DESCUENTO DIVIDENDOS GORDON"],
+    que_es: "Formulas clasicas de valoracion rapida, para empresas maduras con beneficios estables.",
+    como_leerlo: "Dan un rango orientativo de valor, mas simple y conservador que un DCF.",
+    trampa: "Inutiles para empresas en perdidas o de alto crecimiento.",
+    rango: "Usar solo para empresas maduras (>10 anos cotizando, beneficios estables)",
+    ideal: "Resultado mas bajo de las tres formulas = estimacion conservadora",
+  },
+  average_cost: {
+    titulo: "Coste medio",
+    alias: ["Coste medio"],
+    que_es: "Precio medio pagado por accion en tu cartera, sumando todas las compras y ventas.",
+    como_leerlo: "Se recalcula con cada operacion. Es tu punto de referencia para ganancias.",
+    trampa: "No es el precio de la ultima compra: es la media ponderada de todas.",
+    rango: "Sin rango ideal: depende de tu estrategia de entrada",
+    ideal: "Deberia ser < precio actual para tener plusvalia",
+  },
+  unrealized_gain: {
+    titulo: "Plusvalia latente vs. realizada",
+    alias: ["P&L", "PLUSVALIA LATENTE", "REALIZADO", "Plusvalia latente"],
+    que_es: "Latente: ganancia o perdida de lo que aun tienes. Realizada: la que ya se cerro al vender.",
+    como_leerlo: "Solo la realizada tributa. La latente puede subir o bajar manana.",
+    trampa: "No confundir plusvalia latente grande con dinero ya en el bolsillo.",
+    rango: "Latente: variable. Realizada: positiva = buenas decisiones pasadas",
+    ideal: "Plusvalia latente positiva; realizada positiva a largo plazo",
+  },
+  portfolio_weight: {
+    titulo: "Peso en cartera",
+    alias: ["Peso", "PESO"],
+    que_es: "Que porcentaje del valor total de tu cartera representa esa posicion.",
+    como_leerlo: "Un peso muy alto concentra el riesgo de toda la cartera en ella.",
+    trampa: "Se calcula sobre valor actual, asi que sube solo porque la accion suba.",
+    rango: "<5% posicion pequena | 5-15% moderada | 15-25% concentrada | >25% muy concentrada",
+    ideal: "<15% por posicion; <30% por sector para diversificar riesgo",
+  },
+  savings_rate: {
+    titulo: "Tasa de ahorro",
+    alias: ["tasa de ahorro"],
+    que_es: "Que porcentaje de tus ingresos del mes no se ha gastado.",
+    como_leerlo: "Mas alta es mejor para acumular patrimonio.",
+    trampa: "Un mes con ingreso puntual grande infla la tasa sin cambiar tu habito real.",
+    rango: "<0% gasto >ingreso | 0-20% bajo | 20-40% bueno | >40% excelente",
+    ideal: ">20% sostenido; >30% si quieres acelerar acumulacion",
+  },
+  committed_future: {
+    titulo: "Comprometido futuro",
+    alias: ["comprometido_futuro", "anotado con fecha posterior a hoy"],
+    que_es: "Gastos ya anotados en la app pero con fecha posterior a hoy.",
+    como_leerlo: "Se suma aparte del gasto real para que el presupuesto no se descuadre.",
+    trampa: "No es gasto ya hecho: si lo cancelas, edita o borra el apunte.",
+    rango: "Sin rango ideal: depende de tus compromisos reales",
+    ideal: "Reflejar compromisos reales; no anadir hipotecarios",
+  },
+  derived_fields: {
+    titulo: "Campos derivados",
+    alias: ["Campos derivados"],
+    que_es: "Datos que Yahoo no publica para ciertos valores y que la app calcula.",
+    como_leerlo: "Se calculan por identidad contable exacta, no son una estimacion.",
+    trampa: "Fiables si los datos de origen lo son; contrastar con informe anual si la cifra es rara.",
+    rango: "Identidad contable exacta: sin margen de error si los inputs son correctos",
+    ideal: "Comparar con datos oficiales de la empresa cuando sea posible",
+  },
+  market_status: {
+    titulo: "Estado de mercado",
+    alias: ["ABIERTO", "CERRADO", "PREAPERTURA", "POSTCIERRE"],
+    que_es: "Si la bolsa donde cotiza esa accion esta abierta, cerrada o en franjas antes/despues.",
+    como_leerlo: "Con mercado cerrado, el precio es el ultimo cierre, no cotizacion en movimiento.",
+    trampa: "Preapertura y postcierre tienen muy poca liquidez: precios se mueven mucho.",
+    rango: "ABIERTO = negociacion real; CERRADO = precio historico; PRE/POST = poca liquidez",
+    ideal: "Consultar durante horario de mercado para datos mas fiables",
+  },
+  price_freshness: {
+    titulo: "Antiguedad del precio",
+    alias: ["Actualizado", "hace"],
+    que_es: "Cuanto tiempo ha pasado desde que se genero el precio mostrado.",
+    como_leerlo: "Verde = reciente. Ambar = varios minutos. Rojo = >20 min o otra sesion.",
+    trampa: "Precio 'de hace 5 min' con mercado cerrado es el cierre definitivo.",
+    rango: "<2 min = datos en vivo | 2-20 min = diferido | >20 min = historico",
+    ideal: "<2 min durante horario de mercado",
+  },
+  day_change: {
+    titulo: "Variacion del dia",
+    alias: ["Dia", "hoy"],
+    que_es: "Cuanto ha subido o bajado el precio desde el cierre de la sesion anterior.",
+    como_leerlo: "Se calcula sobre el ultimo cierre disponible, aunque el mercado este cerrado.",
+    trampa: "En finde compara contra el cierre del ultimo dia habil, no contra 'ayer'.",
+    rango: "<0% bajista | 0-1% estable | 1-3% movimiento notable | >3% fuerte",
+    ideal: "Sin ideal: refleja el mercado, no una oportunidad",
+  },
+  period_return: {
+    titulo: "Rentabilidad del periodo",
+    alias: ["Rentabilidad"],
+    que_es: "Cuanto ha subido o bajado el precio entre inicio y final del periodo.",
+    como_leerlo: "No incluye dividendos cobrados en ese periodo, solo variacion del precio.",
+    trampa: "Periodo corto y favorable puede pintar panorama mejor del real.",
+    rango: "<0% perdedor | 0-10% modesto | 10-25% bueno | >25% excelente",
+    ideal: ">10% anual a largo plazo (5+ anos) supera la inflacion",
+  },
+};
+
+/** Busca una entrada por el texto exacto que se muestra en pantalla (label o alias). */
+function buscarGlosario(etiqueta) {
+  const t = (etiqueta || "").trim().toLowerCase();
+  for (const id in GLOSARIO) {
+    const e = GLOSARIO[id];
+    if (e.titulo.toLowerCase() === t) return e;
+    if (e.alias.some((a) => a.toLowerCase() === t)) return e;
+  }
+  return null;
+}

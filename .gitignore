@@ -1,0 +1,11 @@
+# Datos personales: nunca deben salir de este equipo
+datos/
+*.db
+*.db-journal
+
+# Claves de API locales
+.env
+.mcp.local.json
+
+__pycache__/
+*.pyc

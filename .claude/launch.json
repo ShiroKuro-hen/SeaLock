@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sealock",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-u", "app/servidor.py"],
+      "port": 8765
+    }
+  ]
+}

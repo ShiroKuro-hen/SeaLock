@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "finance": {
+      "command": "python",
+      "args": ["-u", "mcp/finanzas_server.py"],
+      "env": {
+        "SEALOCK_CURRENCY": "EUR",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "market": {
+      "command": "python",
+      "args": ["-u", "mcp/mercado_server.py"],
+      "env": {
+        "SEALOCK_CURRENCY": "EUR",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
