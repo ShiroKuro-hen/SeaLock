@@ -29,6 +29,8 @@ SeaLock/
 ├─ pruebas/
 │  ├─ prueba_humo.py          Bateria end-to-end contra ambos servidores MCP
 │  └─ prueba_web.py           Bateria de la app web, incluidas sus defensas
+├─ docs/
+│  └─ investigacion-repos.md  Repos open source evaluados para integrar (ago 2026)
 └─ datos/                     Base de datos y copias de seguridad (NO compartir)
 ```
 
@@ -187,11 +189,39 @@ Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fall
 - [ ] D3d — retry buttons en estados de error
 - [ ] D3e — modal de confirmacion custom (sustituir `confirm()` del browser)
 
+### E — Integrar open source externo
+
+Investigacion completa en [`docs/investigacion-repos.md`](docs/investigacion-repos.md)
+(agosto 2026, datos verificados via API de GitHub). Ninguna fase anade dependencias:
+todo se vendoriza con su licencia, leyendo con stdlib.
+
+- [ ] **E1 — Catalogo local de simbolos** (FinanceDatabase, MIT). Ataca el fallo mas
+      documentado: Yahoo omite la cotizacion europea principal y `ticker_search` es
+      intermitente. CSV por mercado (`MCE.csv` Madrid = 216 KB) con `symbol, name, isin,
+      mic, currency, sector, country`. Verificado: `ITX.MC`, `SAN.MC`, `IBE.MC` presentes.
+      Sub-tareas E1a-E1f en el doc. Sustituye tambien la constante adivinada `OTC_CODES`.
+- [ ] **E2 — Indicadores tecnicos** (talipp, MIT, **`requirements.txt` vacio = cero
+      dependencias**). Vendorizar RSI/ATR/Bollinger/MACD; hoy `historical()` calcula
+      RSI y SMA a mano. Ojo: el test B4 exige entrada en `glosario.js` por cada etiqueta.
+- [ ] **E3 — Metricas de cartera** (formulas de quantstats, Apache-2.0). Sharpe, Sortino,
+      Calmar y comparativa contra benchmark (`^IBEX`).
+- [ ] **E4 — Senales y alertas** (absorbe "Alertas precio" del backlog). Describe hechos
+      ("RSI de ITX.MC bajo 30"), nunca recomienda. Respeta el limite de no asesoramiento.
+- [ ] **E5 — Ejecucion via broker** (`ib_async`, BSD-2, unica opcion con cobertura
+      europea). **REQUIERE DECISION PREVIA**: contradice § Limites ("sin asesoramiento",
+      "compra esto no") y rompe la regla de cero dependencias. Solo paper trading, y
+      actualizando antes esa seccion.
+
+Evitar por licencia virica o no libre: OpenBB y Ghostfolio (AGPL-3.0), Freqtrade y
+pysystemtrade (GPL-3.0), backtesting.py (AGPL-3.0), vectorbt (Commons Clause, **no es
+open source**). Muertos pese a las estrellas: maybe-finance (archivado), backtrader
+(sin commits desde 2024-08), zipline (sin commits desde 2024-02).
+
 ### Backlog adicional
 - [ ] **A6** — medir delay real en sesion
 - [ ] **Dark mode** — solo si se pide
 - [ ] **Exportar datos** — CSV/JSON de movimientos y cartera
 - [ ] **Grafico evolucion cartera** — linea temporal con valor total + plusvalia
-- [ ] **Alertas precio** — notificacion local cuando accion cruza umbral
+- [ ] ~~**Alertas precio**~~ — absorbido por E4
 - [ ] **Comparador acciones** — tabla lado a lado de fundamentales
 - [ ] **Historico presupuestos** — comparar presupuesto vs real por mes
