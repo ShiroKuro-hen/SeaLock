@@ -78,37 +78,43 @@ try:
 
     tools = c.request("tools/list")["result"]["tools"]
     names = {t["name"] for t in tools}
-    check(f"tools/list ({len(tools)} herramientas)", len(tools) >= 25)
-    check("herramientas clave presentes", {"transaction_create", "portfolio_view", "account_update", "account_delete"} <= names)
-
-    created = c.request(
-        "tools/call",
-        {
-            "name": "transaction_create",
-            "arguments": {
-                "type": "expense",
-                "amount": 12.5,
-                "category": "prueba-humo",
-                "description": "registro de prueba automatica",
-            },
-        },
+    check(f"tools/list ({len(tools)} herramientas)", len(tools) >= 8)
+    check(
+        "herramientas clave presentes",
+        {"trade_create", "portfolio_view", "profile_get", "profile_set", "watchlist_add"} <= names,
     )
-    data = json.loads(text(created))
-    check("registrar movimiento", data.get("ok") is True, text(created))
-    test_id = data.get("id")
 
-    summary = json.loads(text(c.request("tools/call", {"name": "period_summary", "arguments": {}})))
-    check("period_summary", "expenses" in summary, str(summary))
-
-    # Validacion: un importe negativo debe rechazarse.
-    bad = c.request(
-        "tools/call",
-        {
-            "name": "transaction_create",
-            "arguments": {"type": "expense", "amount": -5, "category": "prueba-humo"},
-        },
+    # --- perfil inversor ---
+    defaults = json.loads(text(c.request("tools/call", {"name": "profile_get", "arguments": {}})))
+    check(
+        "profile_get devuelve valores por defecto",
+        defaults == {"risk_tolerance": "moderate", "horizon": "long", "preference": "balanced", "updated_at": None},
+        str(defaults),
     )
-    check("rechaza importe negativo", bad["result"].get("isError") is True, text(bad))
+
+    set_result = json.loads(text(c.request("tools/call", {
+        "name": "profile_set",
+        "arguments": {"risk_tolerance": "aggressive", "preference": "growth"},
+    })))
+    check(
+        "profile_set actualiza los campos dados",
+        set_result["risk_tolerance"] == "aggressive" and set_result["preference"] == "growth"
+        and set_result["horizon"] == "long",
+        str(set_result),
+    )
+
+    reread = json.loads(text(c.request("tools/call", {"name": "profile_get", "arguments": {}})))
+    check(
+        "profile_get persiste el cambio (actualizacion parcial)",
+        reread["risk_tolerance"] == "aggressive" and reread["preference"] == "growth"
+        and reread["horizon"] == "long",
+        str(reread),
+    )
+
+    bad_profile = c.request("tools/call", {
+        "name": "profile_set", "arguments": {"risk_tolerance": "yolo"},
+    })
+    check("profile_set rechaza valor de enum invalido", bad_profile["result"].get("isError") is True, text(bad_profile))
 
     trade = c.request(
         "tools/call",
@@ -154,187 +160,22 @@ try:
     )
 
     bad_sql = c.request(
-        "tools/call", {"name": "sql_query", "arguments": {"sql": "DELETE FROM transactions"}}
+        "tools/call", {"name": "sql_query", "arguments": {"sql": "DELETE FROM trades"}}
     )
     check("sql_query bloquea escritura", bad_sql["result"].get("isError") is True)
 
-    deleted = c.request("tools/call", {"name": "transaction_delete", "arguments": {"id": test_id}})
-    check("eliminar movimiento devuelve el registro", "deleted" in json.loads(text(deleted)))
-
-    # --- D2b: transaction_update ---
-    created2 = json.loads(text(c.request("tools/call", {
-        "name": "transaction_create",
-        "arguments": {"type": "expense", "amount": 20, "category": "prueba-humo"},
+    # --- watchlist ---
+    added = json.loads(text(c.request("tools/call", {
+        "name": "watchlist_add",
+        "arguments": {"ticker": "nvda", "thesis": "prueba-humo", "target_price": 200},
     })))
-    updated = json.loads(text(c.request("tools/call", {
-        "name": "transaction_update",
-        "arguments": {"id": created2["id"], "amount": 33.5, "category": "prueba-editada"},
-    })))
-    check(
-        "transaction_update cambia importe y categoria",
-        updated["after"]["amount"] == 33.5 and updated["after"]["category"] == "prueba-editada",
-        str(updated),
-    )
-    c.request("tools/call", {"name": "transaction_delete", "arguments": {"id": created2["id"]}})
+    check("watchlist_add normaliza el ticker", added.get("ticker") == "NVDA", str(added))
 
-    # --- D2c: transactions_list pagination (offset/has_more) ---
-    page_ids = []
-    for i in range(5):
-        r = json.loads(text(c.request("tools/call", {
-            "name": "transaction_create",
-            "arguments": {"type": "expense", "amount": 1 + i, "category": "prueba-paginacion"},
-        })))
-        page_ids.append(r["id"])
-    page1 = json.loads(text(c.request("tools/call", {
-        "name": "transactions_list",
-        "arguments": {"category": "prueba-paginacion", "limit": 2, "offset": 0},
-    })))
-    check("pagina 1 devuelve 2 filas con has_more", page1["shown"] == 2 and page1["has_more"] is True, str(page1))
-    page3 = json.loads(text(c.request("tools/call", {
-        "name": "transactions_list",
-        "arguments": {"category": "prueba-paginacion", "limit": 2, "offset": 4},
-    })))
-    check("ultima pagina sin has_more", page3["shown"] == 1 and page3["has_more"] is False, str(page3))
-    for i in page_ids:
-        c.request("tools/call", {"name": "transaction_delete", "arguments": {"id": i}})
+    wl = json.loads(text(c.request("tools/call", {"name": "watchlist_list", "arguments": {}})))
+    check("watchlist_list incluye lo anadido", any(w["ticker"] == "NVDA" for w in wl["watchlist"]), str(wl))
 
-    # --- transferencias entre cuentas propias ---
-    for name in ("Prueba Corriente", "Prueba Ahorro"):
-        c.request(
-            "tools/call",
-            {"name": "account_create", "arguments": {"name": name, "initial_balance": 1000}},
-        )
-    tr = c.request(
-        "tools/call",
-        {
-            "name": "transfer_create",
-            "arguments": {
-                "from_account": "Prueba Corriente",
-                "to_account": "Prueba Ahorro",
-                "amount": 300,
-            },
-        },
-    )
-    check("registrar transferencia", json.loads(text(tr)).get("ok") is True, text(tr))
-
-    balances = {
-        x["name"]: x["balance"]
-        for x in json.loads(text(c.request("tools/call", {"name": "accounts_list", "arguments": {}})))[
-            "accounts"
-        ]
-    }
-    check(
-        "traspaso mueve ambos saldos",
-        balances.get("Prueba Corriente") == 700 and balances.get("Prueba Ahorro") == 1300,
-        str(balances),
-    )
-
-    res = json.loads(text(c.request("tools/call", {"name": "period_summary", "arguments": {}})))
-    check(
-        "traspaso NO cuenta como ingreso ni gasto",
-        res["income"] == 0 and res["expenses"] == 0,
-        f"income={res['income']} expenses={res['expenses']}",
-    )
-
-    same = c.request(
-        "tools/call",
-        {
-            "name": "transfer_create",
-            "arguments": {"from_account": "Prueba Ahorro", "to_account": "Prueba Ahorro", "amount": 10},
-        },
-    )
-    check("rechaza traspaso a la misma cuenta", same["result"].get("isError") is True)
-
-    # --- movimientos recurrentes ---
-    rec = c.request(
-        "tools/call",
-        {
-            "name": "recurring_create",
-            "arguments": {
-                "concept": "Nomina prueba",
-                "type": "income",
-                "amount": 2000,
-                "category": "nomina",
-                "frequency": "monthly",
-                "day": 31,
-                "start_date": "2026-01-31",
-            },
-        },
-    )
-    check("definir recurrente", json.loads(text(rec)).get("ok") is True, text(rec))
-
-    sim = json.loads(
-        text(
-            c.request(
-                "tools/call",
-                {"name": "recurring_apply", "arguments": {"end_date": "2026-04-30"}},
-            )
-        )
-    )
-    check("simula 4 ocurrencias (ene-abr)", sim["pending"] == 4, str(sim["pending"]))
-    check(
-        "ajusta dia 31 a meses cortos",
-        any(d["date"] == "2026-02-28" for d in sim["detail"]),
-        str([d["date"] for d in sim["detail"]]),
-    )
-    check("simular no escribe nada", sim["simulation"] is True)
-
-    applied = json.loads(
-        text(
-            c.request(
-                "tools/call",
-                {
-                    "name": "recurring_apply",
-                    "arguments": {"end_date": "2026-04-30", "simulate": False},
-                },
-            )
-        )
-    )
-    check("aplica 4 movimientos", applied["pending"] == 4)
-
-    repeated = json.loads(
-        text(
-            c.request(
-                "tools/call",
-                {
-                    "name": "recurring_apply",
-                    "arguments": {"end_date": "2026-04-30", "simulate": False},
-                },
-            )
-        )
-    )
-    check("idempotente: no duplica", repeated["pending"] == 0, str(repeated["pending"]))
-
-    # --- account_update ---
-    accounts = json.loads(text(c.request("tools/call", {"name": "accounts_list", "arguments": {}})))["accounts"]
-    acc_id = next(a["id"] for a in accounts if a["name"] == "Prueba Corriente")
-
-    edited = json.loads(text(c.request("tools/call", {
-        "name": "account_update",
-        "arguments": {"id": acc_id, "name": "PC Editada", "type": "investment"},
-    })))
-    check("account_update cambia nombre y tipo", edited["after"]["name"] == "PC Editada" and edited["after"]["type"] == "investment", str(edited))
-
-    after_edit = json.loads(text(c.request("tools/call", {"name": "accounts_list", "arguments": {}})))["accounts"]
-    check("account_update persiste", next(a["name"] for a in after_edit if a["id"] == acc_id) == "PC Editada")
-
-    # --- account_delete (borrado fisico) ---
-    # Crear cuenta temporal con un movimiento para probar cascada
-    c.request("tools/call", {"name": "account_create", "arguments": {"name": "Para Borrar", "initial_balance": 50}})
-    c.request("tools/call", {"name": "transaction_create", "arguments": {
-        "type": "expense", "amount": 1, "category": "prueba-borrado", "account": "Para Borrar"}})
-    tmp = next(a["id"] for a in json.loads(text(
-        c.request("tools/call", {"name": "accounts_list", "arguments": {}})))["accounts"] if a["name"] == "Para Borrar")
-
-    deleted_account = json.loads(text(c.request("tools/call", {"name": "account_delete", "arguments": {"id": tmp}})))
-    check("account_delete borra la cuenta", deleted_account["account"]["name"] == "Para Borrar", str(deleted_account))
-
-    after_delete = json.loads(text(c.request("tools/call", {"name": "accounts_list", "arguments": {}})))["accounts"]
-    check("account_delete desaparece de listar", all(a["id"] != tmp for a in after_delete))
-
-    txs = json.loads(text(c.request("tools/call", {
-        "name": "transactions_list", "arguments": {"account": "Para Borrar"}})))
-    check("account_delete cascada: borra movimientos", txs["shown"] == 0)
+    removed = json.loads(text(c.request("tools/call", {"name": "watchlist_remove", "arguments": {"ticker": "NVDA"}})))
+    check("watchlist_remove confirma el borrado", removed.get("ok") is True, str(removed))
 finally:
     c.close()
 
@@ -459,6 +300,74 @@ try:
     )
 finally:
     c.close()
+
+# ---------------------------------------------------------------------- scoring
+# Pure module, no network: exercised directly instead of through a subprocess.
+print("\n== motor de puntuacion (scoring.py) ==")
+sys.path.insert(0, os.path.join(ROOT, "mcp"))
+import scoring  # noqa: E402
+
+HEALTHY = {
+    "fundamentals": {
+        "profitability": {"roe_pct": 25, "net_margin_pct": 20, "roa_pct": 12},
+        "valuation": {"per_trailing": 12, "peg": 0.8},
+        "financial_strength": {"debt_to_equity": 30, "current_ratio": 2.5},
+        "growth": {"revenue_yoy_pct": 12, "earnings_yoy_pct": 15},
+        "dividend": {},
+    },
+    "quote": {"price": 120},
+    "historical": {"sma_50": 100, "sma_200": 90, "period_return_pct": 18, "rsi_14": 55},
+}
+healthy_score = scoring.score_stock(
+    HEALTHY["quote"], HEALTHY["fundamentals"], HEALTHY["historical"],
+)
+check(
+    "empresa sana y barata saca nota >= 7",
+    healthy_score["score"] >= 7,
+    str(healthy_score["score"]),
+)
+
+DISTRESSED = {
+    "fundamentals": {
+        "profitability": {},
+        "valuation": {},
+        "financial_strength": {"debt_to_equity": 300},
+        "growth": {"revenue_yoy_pct": -8, "earnings_yoy_pct": -20},
+        "dividend": {"yield_pct": 9, "payout_pct": 120},
+        "cash_flow": {"free_cash_flow": -500},
+    },
+    "quote": {"price": 40},
+    "historical": {"sma_50": 55, "sma_200": 60, "period_return_pct": -35, "rsi_14": 25},
+}
+distressed_score = scoring.score_stock(
+    DISTRESSED["quote"], DISTRESSED["fundamentals"], DISTRESSED["historical"],
+)
+check(
+    "empresa en apuros saca nota <= 3",
+    distressed_score["score"] <= 3,
+    str(distressed_score["score"]),
+)
+check(
+    "empresa en apuros dispara senales de alerta",
+    len(distressed_score["red_flags"]) > 0,
+    str(distressed_score["red_flags"]),
+)
+
+empty_score = scoring.score_stock({}, {}, {})
+check(
+    "sin fundamentales, cobertura baja y con aviso",
+    empty_score["coverage_pct"] < 50 and empty_score["coverage_warning"],
+    str(empty_score["coverage_pct"]),
+)
+
+combos_ok = True
+for risk in ("conservative", "moderate", "aggressive"):
+    for horizon in ("short", "medium", "long"):
+        for preference in ("dividend", "growth", "balanced"):
+            w = scoring._adjust_weights(risk, horizon, preference)
+            if abs(sum(w.values()) - 100) > 0.01:
+                combos_ok = False
+check("los pesos del perfil suman 100 en las 27 combinaciones", combos_ok)
 
 shutil.rmtree(TEST_DIR, ignore_errors=True)
 

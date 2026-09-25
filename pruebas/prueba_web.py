@@ -92,17 +92,17 @@ try:
         check(f"sirve {file}", code == 200 and mark in body)
 
     # --- defensas ---
-    code, _ = request("/api/finance/accounts_list", {})
+    code, _ = request("/api/finance/watchlist_list", {})
     check("rechaza API sin token", code == 403, f"codigo={code}")
 
-    code, _ = request("/api/finance/accounts_list", {}, token="equivocado")
+    code, _ = request("/api/finance/watchlist_list", {}, token="equivocado")
     check("rechaza token incorrecto", code == 403, f"codigo={code}")
 
-    code, _ = request("/api/finance/accounts_list", {}, token=token,
+    code, _ = request("/api/finance/watchlist_list", {}, token=token,
                        headers={"Origin": "https://malicioso.example"})
     check("rechaza Origin externo (CSRF)", code == 403, f"codigo={code}")
 
-    code, _ = request("/api/finance/accounts_list", {}, token=token,
+    code, _ = request("/api/finance/watchlist_list", {}, token=token,
                        headers={"Host": "atacante.example"})
     check("rechaza Host externo (DNS rebinding)", code == 403, f"codigo={code}")
 
@@ -114,28 +114,22 @@ try:
         code, body = request(path, data, token=token)
         return code, json.loads(body)
 
-    code, r = call("/api/finance/account_create", {"name": "Banco", "initial_balance": 2000})
-    check("crea cuenta via API", code == 200 and r["data"]["ok"], str(r))
+    code, r = call("/api/finance/profile_get", {})
+    check("profile_get via API devuelve por defecto", code == 200 and r["data"]["risk_tolerance"] == "moderate", str(r))
 
-    code, r = call("/api/finance/transaction_create",
-                    {"type": "expense", "amount": 55.4, "category": "alimentacion",
-                     "account": "Banco", "description": "compra semanal"})
-    check("registra movimiento via API", code == 200 and r["data"]["ok"], str(r))
+    code, r = call("/api/finance/profile_set", {"preference": "dividend"})
+    check("profile_set via API actualiza", code == 200 and r["data"]["preference"] == "dividend", str(r))
 
-    code, r = call("/api/finance/transaction_create",
-                    {"type": "expense", "amount": -5, "category": "x"})
-    check("propaga error de validacion como 400", code == 400 and "error" in r, str(r))
-
-    code, r = call("/api/app/dashboard", {})
-    p = r["data"]
-    check("dashboard agrega patrimonio", code == 200 and p["net_worth"] == 1944.6,
-          f"net_worth={p.get('net_worth')}")
-    check("dashboard trae serie de evolucion", isinstance(p["evolution"], list))
-    check("dashboard trae resumen del mes", p["month"]["expenses"] == 55.4, str(p["month"]["expenses"]))
+    code, r = call("/api/finance/profile_set", {"horizon": "nunca"})
+    check("profile_set via API rechaza enum invalido", code == 400, str(r))
 
     code, r = call("/api/finance/trade_create",
                     {"ticker": "AAPL", "action": "buy", "quantity": 5, "price": 150})
     check("registra operacion via API", code == 200 and r["data"]["ok"], str(r))
+
+    code, r = call("/api/finance/trade_create",
+                    {"ticker": "AAPL", "action": "sell", "quantity": 999, "price": 150})
+    check("propaga error de negocio como 400 (venta en corto)", code == 400 and "error" in r, str(r))
 
     code, r = call("/api/app/portfolio_valued", {})
     pos = r["data"]["positions"]
@@ -149,13 +143,21 @@ try:
 
     code, r = call("/api/app/stock_detail", {"ticker": "AAPL"})
     f = r["data"]
-    check("ficha completa (red)",
-          code == 200 and f["quote"].get("price") and "dcf" in f,
+    check("ficha completa con nota (red)",
+          code == 200 and f["quote"].get("price") and "dcf" in f and "score" in f,
           str(r)[:200], critical=False)
+    if code == 200 and "score" in f:
+        check("la nota trae position para un valor en cartera", f.get("position") is not None,
+              str(f.get("position")), critical=False)
 
-    code, r = call("/api/finance/transfer_create",
-                    {"from_account": "Banco", "to_account": "Banco", "amount": 10})
-    check("errores de negocio llegan al cliente", code == 400, str(r))
+    code, r = call("/api/app/portfolio_scores", {})
+    check("portfolio_scores via API (red)",
+          code == 200 and "AAPL" in r["data"]["scores"], str(r)[:200], critical=False)
+
+    code, r = call("/api/finance/watchlist_add", {"ticker": "msft"})
+    check("watchlist_add via API", code == 200 and r["data"]["ticker"] == "MSFT", str(r))
+    code, r = call("/api/finance/watchlist_remove", {"ticker": "msft"})
+    check("watchlist_remove via API", code == 200 and r["data"]["ok"], str(r))
 
     # B4: todo label con data-glosario en app.js tiene entrada en glosario.js
     with open(os.path.join(ROOT, "app", "web", "app.js"), encoding="utf-8") as f:
@@ -172,40 +174,6 @@ try:
     missing = {e.lower() for e in ui_labels} - {a.lower() for a in glossary_aliases}
     check("B4: todo label data-glosario tiene entrada en glosario",
           not missing, f"Faltan: {missing}" if missing else "")
-
-    # --- account_update ---
-    listed = call("/api/finance/accounts_list", {})[1]["data"]
-    bank_id = next(a["id"] for a in listed["accounts"] if a["name"] == "Banco")
-
-    code, r = call("/api/finance/account_update", {"id": bank_id, "name": "Banco Editado", "type": "investment"})
-    check("account_update via API", code == 200 and r["data"]["ok"], str(r))
-
-    listed2 = call("/api/finance/accounts_list", {})[1]["data"]
-    check("account_update persiste", next(a["name"] for a in listed2["accounts"] if a["id"] == bank_id) == "Banco Editado")
-
-    # --- account_delete ---
-    call("/api/finance/account_create", {"name": "TMP", "initial_balance": 1})
-    tmp_id = next(a["id"] for a in call("/api/finance/accounts_list", {})[1]["data"]["accounts"] if a["name"] == "TMP")
-    code, r = call("/api/finance/account_delete", {"id": tmp_id})
-    check("account_delete via API", code == 200 and r["data"]["ok"], str(r))
-    after = call("/api/finance/accounts_list", {})[1]["data"]
-    check("account_delete desaparece", all(a["id"] != tmp_id for a in after["accounts"]))
-
-    # --- D2b/D2c: transaction_update + transactions_list pagination via API ---
-    code, r = call("/api/finance/transaction_create",
-                    {"type": "expense", "amount": 9, "category": "prueba-web-editar"})
-    tx_id = r["data"]["id"]
-    code, r = call("/api/finance/transaction_update", {"id": tx_id, "amount": 42})
-    check("transaction_update via API", code == 200 and r["data"]["after"]["amount"] == 42, str(r))
-
-    for _ in range(3):
-        call("/api/finance/transaction_create", {"type": "expense", "amount": 3, "category": "prueba-web-paginacion"})
-    code, r = call("/api/finance/transactions_list",
-                    {"category": "prueba-web-paginacion", "limit": 2, "offset": 0})
-    check("transactions_list pagina 1 via API (has_more)", code == 200 and r["data"]["shown"] == 2 and r["data"]["has_more"] is True, str(r))
-    code, r = call("/api/finance/transactions_list",
-                    {"category": "prueba-web-paginacion", "limit": 2, "offset": 2})
-    check("transactions_list pagina 2 via API", code == 200 and r["data"]["shown"] == 1 and r["data"]["has_more"] is False, str(r))
 
 finally:
     proc.terminate()

@@ -1,10 +1,6 @@
 "use strict";
 
 const CURRENCY = window.SEALOCK.currency;
-let ACCOUNTS = [];
-let TRANSACTIONS = [];
-let TRANSACTIONS_OFFSET = 0;
-const TRANSACTIONS_PAGE_SIZE = 50;
 let CURRENT_STOCK = null; // { ticker, assumptions, marketStatus } de la ultima ficha vista
 let PORTFOLIO_ANY_MARKET_OPEN = true; // gate del auto-refresco: sin nada abierto, no vale la pena sondear
 
@@ -212,9 +208,9 @@ document.addEventListener("click", (e) => {
 });
 
 // Enter/Espacio abren o cierran el popover igual que el clic. Cubre tanto las .metrica
-// (con su propio listener de clic) como las cabeceras de tabla y tarjetas del panel
-// (enganchadas solo por delegacion): un solo listener generico sirve para ambas, porque
-// openGlossary/closeGlossary no dependen de la clase del elemento.
+// (con su propio listener de clic) como las cabeceras de tabla (enganchadas solo por
+// delegacion): un solo listener generico sirve para ambas, porque openGlossary/
+// closeGlossary no dependen de la clase del elemento.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " ") return;
   const objetivo = e.target.closest("[data-glosario]");
@@ -227,7 +223,6 @@ document.addEventListener("keydown", (e) => {
 /* -------------------------------------------------------------- formateo */
 
 const today = () => new Date().toISOString().slice(0, 10);
-const currentMonth = () => new Date().toISOString().slice(0, 7);
 
 function formData(form) {
   const d = {};
@@ -247,364 +242,17 @@ function renderError(id, e) {
   document.getElementById(id).innerHTML = `<div class="error">${esc(e.message || e)}</div>`;
 }
 
-/* --------------------------------------------------------------- graficos */
+/* ------------------------------------------------------------- perfil inversor */
 
-function evolutionChart(series) {
-  if (!series.length) return '<div class="vacio">Aun no hay movimientos registrados. <a href="#" data-help="movimientos">Como apuntar gastos</a></div>';
-
-  const W = 640, H = 220, ml = 52, mb = 26, mt = 12;
-  const max = Math.max(...series.flatMap((d) => [d.income, d.expenses]), 1);
-  const anchoPaso = (W - ml - 10) / series.length;
-  const ancho = Math.min(anchoPaso * 0.36, 22);
-  const y = (v) => H - mb - (v / max) * (H - mb - mt);
-
-  let barras = "", etiquetas = "", puntos = [];
-  series.forEach((d, i) => {
-    const x = ml + i * anchoPaso + anchoPaso / 2;
-    barras += `<rect x="${x - ancho - 1}" y="${y(d.income)}" width="${ancho}"
-      height="${Math.max(0, H - mb - y(d.income))}" fill="var(--verde)" opacity="0.85" rx="2"/>`;
-    barras += `<rect x="${x + 1}" y="${y(d.expenses)}" width="${ancho}"
-      height="${Math.max(0, H - mb - y(d.expenses))}" fill="var(--rojo)" opacity="0.85" rx="2"/>`;
-    puntos.push(`${x},${y(Math.max(d.savings, 0))}`);
-    if (series.length <= 14 || i % 2 === 0) {
-      etiquetas += `<text x="${x}" y="${H - 8}" text-anchor="middle"
-        font-size="10" fill="var(--texto-tenue)">${esc(d.month.slice(5))}</text>`;
-    }
-  });
-
-  let ejes = "";
-  for (let i = 0; i <= 3; i++) {
-    const v = (max / 3) * i, yy = y(v);
-    ejes += `<line x1="${ml}" y1="${yy}" x2="${W - 6}" y2="${yy}" stroke="var(--borde)" stroke-width="1"/>`;
-    ejes += `<text x="${ml - 7}" y="${yy + 3}" text-anchor="end" font-size="10"
-      fill="var(--texto-tenue)">${compact(v)}</text>`;
-  }
-
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolucion mensual">
-    ${ejes}${barras}
-    <polyline points="${puntos.join(" ")}" fill="none" stroke="var(--acento)"
-      stroke-width="2" stroke-linejoin="round"/>
-    ${etiquetas}
-  </svg>
-  <div class="resumen-filtro" style="padding-top:8px">
-    <span><b class="verde">■</b> Ingresos</span>
-    <span><b class="rojo">■</b> Gastos</span>
-    <span><b style="color:var(--acento)">—</b> Ahorro</span>
-  </div>`;
-}
-
-function categoryChart(byCategory) {
-  const expenses = byCategory
-    .filter((c) => c.type === "expense")
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 8);
-  if (!expenses.length) return '<div class="vacio">Sin gastos este mes.</div>';
-
-  const max = Math.max(...expenses.map((g) => g.total));
-  return expenses.map((g) => `
-    <div class="progreso">
-      <div class="fila"><span>${esc(g.category)}</span><b>${money(g.total)}</b></div>
-      <div class="barra"><div class="relleno" style="width:${(100 * g.total) / max}%"></div></div>
-    </div>`).join("");
-}
-
-/* ------------------------------------------------------------------ PANEL */
-
-async function loadDashboard() {
-  loading("tarjetas");
+async function loadProfile() {
   try {
-    const p = await api("app", "dashboard");
-    const m = p.month;
-
-    document.getElementById("tarjetas").innerHTML = `
-      <div class="tarjeta">
-        <div class="etiqueta">Patrimonio</div>
-        <div class="cifra">${money(p.net_worth)}</div>
-        <div class="pie">${money(p.cash)} efectivo · ${money(p.portfolio)} cartera</div>
-      </div>
-      <div class="tarjeta">
-        <div class="etiqueta" data-glosario="Tasa de ahorro">Ahorro del mes</div>
-        <div class="cifra ${sign(m.savings)}">${money(m.savings)}</div>
-        <div class="pie">${m.savings_rate_pct !== null ? `tasa ${number(m.savings_rate_pct, 1)} %` : "sin ingresos"}</div>
-      </div>
-      <div class="tarjeta">
-        <div class="etiqueta">Ingresos / Gastos</div>
-        <div class="cifra">${money(m.expenses)}</div>
-        <div class="pie">de ${money(m.income)} ingresados</div>
-      </div>
-      <div class="tarjeta">
-        <div class="etiqueta" data-glosario="Plusvalia latente vs. realizada">Plusvalia latente</div>
-        <div class="cifra ${sign(p.unrealized_gain)}">${money(p.unrealized_gain ?? 0)}</div>
-        <div class="pie">${p.no_price.length ? `${p.no_price.length} sin precio` : "cartera a mercado"}</div>
-      </div>`;
-    document.querySelectorAll("#tarjetas [data-glosario]").forEach(makeFocusable);
-
-    document.getElementById("grafico-evolucion").innerHTML = evolutionChart(p.evolution);
-    document.getElementById("grafico-categorias").innerHTML = categoryChart(m.by_category);
-
-    ACCOUNTS = p.accounts;
-    document.getElementById("lista-cuentas").innerHTML = p.accounts.length
-      ? `<div class="tabla-scroll"><table><tbody>${p.accounts.map((c) => `
-          <tr data-id="${c.id}">
-            <td class="c-nombre">${esc(c.name)}</td>
-            <td class="c-tipo tenue">${esc(c.type)}</td>
-            <td class="c-moneda tenue">${esc(c.currency || CURRENCY)}</td>
-            <td class="c-saldo num"><b>${money(c.balance, c.currency)}</b></td>
-            <td class="num acc-cuenta">
-              <button class="mini" data-editar-cuenta="${c.id}">Editar</button>
-              <button class="mini peligro" data-borrar-cuenta="${c.id}">Eliminar</button>
-            </td>
-          </tr>`).join("")}
-        </tbody></table></div>`
-      : '<div class="vacio">Crea tu primera cuenta abajo.</div>';
-
-    document.querySelectorAll("[data-editar-cuenta]").forEach((b) =>
-      b.addEventListener("click", () => editAccount(Number(b.dataset.editarCuenta))));
-    document.querySelectorAll("[data-borrar-cuenta]").forEach((b) => {
-      const cId = Number(b.dataset.borrarCuenta);
-      const cName = (ACCOUNTS.find((c) => c.id === cId) || {}).name || "";
-      b.addEventListener("click", () => deleteAccount(cId, esc(cName)));
-    });
-
-    document.getElementById("lista-presupuestos").innerHTML = p.budgets.length
-      ? p.budgets.map((b) => {
-          const cl = b.status === "EXCEEDED" ? "excedido"
-            : b.status === "WILL_EXCEED" || b.consumed_pct > 80 ? "cerca" : "";
-          const color = b.status === "EXCEEDED" ? "rojo" : b.status === "WILL_EXCEED" ? "ambar" : "";
-          return `<div class="progreso">
-            <div class="fila"><span>${esc(b.category)}</span>
-              <span class="${color}">${money(b.spent)} / ${money(b.limit_amount)}</span></div>
-            <div class="barra"><div class="relleno ${cl}"
-              style="width:${Math.min(100, b.consumed_pct)}%"></div></div>
-            ${b.committed_future > 0 ? `<div class="tenue" style="font-size:12px;margin-top:3px">
-              + ${money(b.committed_future)} anotado con fecha posterior a hoy
-              → ${money(b.projected_month_end)} a fin de mes</div>` : ""}
-          </div>`;
-        }).join("")
-      : '<div class="vacio">Sin presupuestos definidos.</div>';
-
-    fillAccountSelectors();
+    const p = await api("finance", "profile_get");
+    const form = document.getElementById("form-perfil");
+    form.elements["risk_tolerance"].value = p.risk_tolerance;
+    form.elements["horizon"].value = p.horizon;
+    form.elements["preference"].value = p.preference;
   } catch (e) {
-    renderError("tarjetas", e);
-  }
-}
-
-function fillAccountSelectors() {
-  const opciones = ACCOUNTS.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
-  const mov = document.querySelector('#form-movimiento select[name="account"]');
-  if (mov) mov.innerHTML = `<option value="">(ninguna)</option>${opciones}`;
-  document.querySelectorAll('#form-traspaso select').forEach((s) => (s.innerHTML = opciones));
-}
-
-/* ------------------------------------------------------------ MOVIMIENTOS */
-
-async function loadTransactions(resetOffset = true) {
-  if (resetOffset) TRANSACTIONS_OFFSET = 0;
-  loading("tabla-movimientos");
-  const month = document.getElementById("filtro-mes").value;
-  const args = { limit: TRANSACTIONS_PAGE_SIZE, offset: TRANSACTIONS_OFFSET };
-  if (month) { args.date_from = `${month}-01`; args.date_to = `${month}-31`; }
-  const type = document.getElementById("filtro-tipo").value;
-  if (type) args.type = type;
-  const text = document.getElementById("filtro-texto").value.trim();
-  if (text) args.search = text;
-
-  try {
-    const d = await api("finance", "transactions_list", args);
-    TRANSACTIONS = d.transactions;
-    document.getElementById("resumen-filtro").innerHTML = `
-      <span>Ingresos <b class="verde">${money(d.income)}</b></span>
-      <span>Gastos <b class="rojo">${money(d.expenses)}</b></span>
-      <span>Neto <b class="${sign(d.net)}">${money(d.net)}</b></span>
-      <span>${d.total} apuntes</span>`;
-
-    document.getElementById("tabla-movimientos").innerHTML = d.transactions.length
-      ? `<div class="tabla-scroll"><table>
-          <thead><tr><th>Fecha</th><th>Categoria</th><th>Descripcion</th>
-            <th>Cuenta</th><th class="num">Importe</th><th></th></tr></thead>
-          <tbody>${d.transactions.map((m) => `
-            <tr data-tx-id="${m.id}">
-              <td class="tenue">${esc(m.date)}</td>
-              <td>${esc(m.category)}${m.subcategory ? ` <span class="tenue">/ ${esc(m.subcategory)}</span>` : ""}</td>
-              <td class="tenue">${esc(m.description || "")}</td>
-              <td class="tenue">${esc(m.account || "")}</td>
-              <td class="num ${m.type === "income" ? "verde" : ""}">
-                ${m.type === "income" ? "+" : "−"}${money(m.amount, m.currency).replace(/^[+-]/, "")}</td>
-              <td class="num">
-                <button class="mini" data-editar="${m.id}">Editar</button>
-                <button class="mini peligro" data-borrar="${m.id}">Borrar</button></td>
-            </tr>`).join("")}
-          </tbody></table></div>
-          <div class="resumen-filtro" style="padding-top:8px">
-            <button class="mini" id="btn-tx-anterior" ${TRANSACTIONS_OFFSET === 0 ? "disabled" : ""}>&larr; Anterior</button>
-            <span class="tenue">${TRANSACTIONS_OFFSET + 1}–${TRANSACTIONS_OFFSET + d.shown} de ${d.total}</span>
-            <button class="mini" id="btn-tx-siguiente" ${d.has_more ? "" : "disabled"}>Siguiente &rarr;</button>
-          </div>`
-      : '<div class="vacio">No hay movimientos con estos filtros.</div>';
-
-    document.querySelectorAll("[data-borrar]").forEach((b) =>
-      b.addEventListener("click", () => deleteTransaction(Number(b.dataset.borrar))));
-    document.querySelectorAll("[data-editar]").forEach((b) =>
-      b.addEventListener("click", () => editTransaction(Number(b.dataset.editar))));
-    const prevBtn = document.getElementById("btn-tx-anterior");
-    if (prevBtn) prevBtn.addEventListener("click", () => {
-      TRANSACTIONS_OFFSET = Math.max(0, TRANSACTIONS_OFFSET - TRANSACTIONS_PAGE_SIZE);
-      loadTransactions(false);
-    });
-    const nextBtn = document.getElementById("btn-tx-siguiente");
-    if (nextBtn) nextBtn.addEventListener("click", () => {
-      TRANSACTIONS_OFFSET += TRANSACTIONS_PAGE_SIZE;
-      loadTransactions(false);
-    });
-
-    const cats = await api("finance", "sql_query", {
-      sql: "SELECT DISTINCT category FROM transactions ORDER BY category",
-    });
-    document.getElementById("categorias").innerHTML =
-      cats.rows.map((c) => `<option value="${esc(c.category)}">`).join("");
-  } catch (e) {
-    renderError("tabla-movimientos", e);
-  }
-}
-
-async function deleteTransaction(id) {
-  if (!confirm(`¿Borrar el movimiento ${id}? No se puede deshacer.`)) return;
-  try {
-    await api("finance", "transaction_delete", { id });
-    notify("Movimiento borrado", "bueno");
-    loadTransactions(false);
-  } catch (e) {
-    notify(e.message, "malo");
-  }
-}
-
-function editTransaction(id) {
-  const m = TRANSACTIONS.find((t) => t.id === id);
-  if (!m) return;
-  const tr = document.querySelector(`tr[data-tx-id="${id}"]`);
-  if (!tr) return;
-
-  tr.classList.add("editando");
-  tr.innerHTML = `
-    <td><input class="ed-fecha" type="date" value="${esc(m.date)}"></td>
-    <td><input class="ed-categoria" value="${esc(m.category)}" required></td>
-    <td><input class="ed-descripcion" value="${esc(m.description || "")}"></td>
-    <td class="tenue">${esc(m.account || "")}</td>
-    <td class="num"><input class="ed-importe" type="number" step="0.01" min="0.01"
-      value="${m.amount}" style="max-width:90px"></td>
-    <td class="num acc-cuenta">
-      <button class="mini principal" data-guardar-mov="${id}">Guardar</button>
-      <button class="mini" data-cancelar-mov="${id}">Cancelar</button>
-    </td>`;
-
-  tr.querySelector(".ed-categoria").addEventListener("keydown", (e) => { if (e.key === "Enter") saveTransaction(id); });
-  tr.querySelector("[data-guardar-mov]").addEventListener("click", () => saveTransaction(id));
-  tr.querySelector("[data-cancelar-mov]").addEventListener("click", () => loadTransactions(false));
-}
-
-async function saveTransaction(id) {
-  const tr = document.querySelector(`tr[data-tx-id="${id}"]`);
-  if (!tr) return;
-  const date = tr.querySelector(".ed-fecha").value;
-  const category = tr.querySelector(".ed-categoria").value.trim();
-  const description = tr.querySelector(".ed-descripcion").value.trim();
-  const amount = Number(tr.querySelector(".ed-importe").value);
-  if (!category) { notify("La categoria no puede estar vacia", "malo"); return; }
-  try {
-    await api("finance", "transaction_update", { id, date, category, description, amount });
-    notify("Movimiento actualizado", "bueno");
-    loadTransactions(false);
-  } catch (e) {
-    notify(e.message, "malo");
-  }
-}
-
-function editAccount(id) {
-  const c = ACCOUNTS.find((c) => c.id === id);
-  if (!c) return;
-  const tr = document.querySelector(`tr[data-id="${id}"]`);
-  if (!tr) return;
-
-  tr.classList.add("editando");
-  tr.innerHTML = `
-    <td><input class="ed-nombre" value="${esc(c.name)}" required></td>
-    <td><select class="ed-tipo">
-      ${["checking","savings","cash","investment","other"].map((t) =>
-        `<option value="${t}"${t === c.type ? " selected" : ""}>${esc(t)}</option>`).join("")}
-    </select></td>
-    <td><input class="ed-moneda" maxlength="3" value="${esc(c.currency || CURRENCY)}" style="max-width:60px"></td>
-    <td class="num">${money(c.balance, c.currency)}</td>
-    <td class="num acc-cuenta">
-      <button class="mini principal" data-guardar-cuenta="${id}">Guardar</button>
-      <button class="mini" data-cancelar="${id}">Cancelar</button>
-    </td>`;
-
-  tr.querySelector(".ed-nombre").focus();
-  tr.querySelector("[data-guardar-cuenta]").addEventListener("click", () => saveAccount(id));
-  tr.querySelector("[data-cancelar]").addEventListener("click", () => loadDashboard());
-  tr.querySelector(".ed-nombre").addEventListener("keydown", (e) => { if (e.key === "Enter") saveAccount(id); });
-}
-
-async function saveAccount(id) {
-  const tr = document.querySelector(`tr[data-id="${id}"]`);
-  if (!tr) return;
-  const name = tr.querySelector(".ed-nombre").value.trim();
-  const type = tr.querySelector(".ed-tipo").value;
-  const currency = tr.querySelector(".ed-moneda").value.trim().toUpperCase();
-  if (!name) { notify("El nombre no puede estar vacio", "malo"); return; }
-  try {
-    await api("finance", "account_update", { id, name, type, currency });
-    notify("Cuenta actualizada", "bueno");
-    loadDashboard();
-  } catch (e) {
-    notify(e.message, "malo");
-  }
-}
-
-async function deleteAccount(id, name) {
-  if (!confirm(`¿Eliminar la cuenta "${name}"?\n\nSe borrarán TODOS los movimientos, operaciones y recurrentes asociados. Esta accion no se puede deshacer.`)) return;
-  try {
-    await api("finance", "account_delete", { id });
-    notify("Cuenta eliminada", "bueno");
-    loadDashboard();
-  } catch (e) {
-    notify(e.message, "malo");
-  }
-}
-
-async function loadRecurring() {
-  try {
-    const d = await api("finance", "recurring_list");
-    document.getElementById("lista-recurrentes").innerHTML = d.recurring.length
-      ? `<div class="tabla-scroll"><table>
-          <thead><tr><th>Concepto</th><th>Categoria</th><th>Cuando</th>
-            <th class="num">Importe</th><th class="num">Generados</th><th></th></tr></thead>
-          <tbody>${d.recurring.map((r) => `
-            <tr>
-              <td>${esc(r.concept)}</td>
-              <td class="tenue">${esc(r.category)}</td>
-              <td class="tenue">${esc(r.frequency)}, dia ${r.day}</td>
-              <td class="num ${r.type === "income" ? "verde" : ""}">${money(r.amount, r.currency)}</td>
-              <td class="num tenue">${r.generated_count}</td>
-              <td class="num"><button class="mini peligro" data-quitar-rec="${r.id}">Desactivar</button></td>
-            </tr>`).join("")}
-          </tbody></table></div>
-         <div class="resumen-filtro">
-           <span>Fijo mensual: <b class="rojo">${money(d.fixed_monthly_commitment)}</b></span>
-           <span>Ingreso fijo: <b class="verde">${money(d.fixed_monthly_income)}</b></span>
-           <span>Margen: <b class="${sign(d.fixed_monthly_margin)}">${money(d.fixed_monthly_margin)}</b></span>
-         </div>`
-      : '<div class="vacio">Sin recurrentes definidos.</div>';
-
-    document.querySelectorAll("[data-quitar-rec]").forEach((b) =>
-      b.addEventListener("click", async () => {
-        if (!confirm("¿Desactivar este recurrente? El historial se conserva.")) return;
-        await api("finance", "recurring_deactivate", { id: Number(b.dataset.quitarRec) });
-        notify("Recurrente desactivado", "bueno");
-        loadRecurring();
-      }));
-  } catch (e) {
-    renderError("lista-recurrentes", e);
+    // Si falla, el formulario se queda con los valores por defecto del HTML.
   }
 }
 
@@ -649,7 +297,7 @@ async function loadPortfolio(silencioso = false) {
           <thead><tr><th>Ticker</th><th class="num">Cant.</th><th class="num" data-glosario="Coste medio">Coste medio</th>
             <th class="num">Precio</th><th class="num" data-glosario="Variacion del dia">Dia</th><th>Mercado</th><th>Actualizado</th>
             <th class="num">Valor</th><th class="num" data-glosario="Plusvalia latente vs. realizada">P&L</th><th class="num">%</th>
-            <th class="num" data-glosario="Peso en cartera">Peso</th></tr></thead>
+            <th class="num" data-glosario="Peso en cartera">Peso</th><th class="num" data-glosario="Nota">Nota</th></tr></thead>
           <tbody>${d.positions.map((p) => {
             const fr = freshness(p.age_seconds, p.price_as_of);
             const badge = marketStatusBadge(p.market_status);
@@ -669,15 +317,35 @@ async function loadPortfolio(silencioso = false) {
               <td class="num ${sign(p.gain)}">${p.gain === null ? "—" : money(p.gain)}</td>
               <td class="num ${sign(p.gain_pct)}">${pct(p.gain_pct)}</td>
               <td class="num tenue">${p.weight_pct !== null ? `${number(p.weight_pct, 1)} %` : "—"}</td>
+              <td class="num" data-nota="${esc(p.ticker)}">…</td>
             </tr>`;}).join("")}
           </tbody></table></div>`
       : '<div class="vacio">Sin posiciones abiertas. <a href="#" data-help="cartera">Como registrar una compra</a></div>';
     document.querySelectorAll("#tabla-cartera [data-glosario]").forEach(makeFocusable);
+    if (d.positions.length) loadPortfolioScores();
   } catch (e) {
     if (silencioso) notify(`No se pudo actualizar la cartera: ${e.message}`, "malo");
     else renderError("tabla-cartera", e);
   }
   if (!silencioso) loadWatchlist();
+}
+
+/** Rellena la columna Nota tras pintar la tabla: el servidor cachea 1h por ticker,
+ * asi que llamar aqui no dispara una tanda nueva de peticiones a Yahoo cada vez. */
+async function loadPortfolioScores() {
+  try {
+    const d = await api("app", "portfolio_scores");
+    for (const [ticker, s] of Object.entries(d.scores || {})) {
+      const cell = document.querySelector(`[data-nota="${ticker}"]`);
+      if (!cell) continue;
+      if (!s || s.error) { cell.innerHTML = '<span class="tenue">—</span>'; continue; }
+      const aviso = s.score < 4 ? ' <span class="ambar" title="Nota baja: revisar">⚠</span>' : "";
+      cell.innerHTML = `<span class="${s.sentiment}">${s.score}/10</span>${aviso}`;
+      cell.title = s.label;
+    }
+  } catch (e) {
+    // Silencioso: la tabla ya se mostro sin notas, no es un fallo bloqueante.
+  }
 }
 
 async function loadWatchlist() {
@@ -783,8 +451,15 @@ async function viewStock(ticker, assumptions = {}, silencioso = false) {
         ${c.status === "CLOSED" ? `<div class="nota" style="margin-top:12px">Mercado cerrado: este es el
           <b>ultimo precio de cierre</b>, no una cotizacion en vivo.
           ${c.data_delay_min ? `Datos con ${c.data_delay_min} min de retraso en horario de mercado.` : ""}</div>` : ""}
-        ${renderVerdict(d.verdict)}
-        <div class="metricas">
+        ${renderScore(d.score)}
+        ${d.position ? `<div class="metricas" style="margin-top:14px">
+          ${metrica("Cantidad", number(d.position.quantity, 4))}
+          ${metrica("Coste medio", money(d.position.average_cost, d.position.currency))}
+          ${metrica("Invertido", money(d.position.invested, d.position.currency))}
+          ${metrica("Valor actual", d.position.current_value !== null ? money(d.position.current_value, d.position.currency) : "—")}
+          ${metrica("P&L", d.position.gain !== null ? `${money(d.position.gain, d.position.currency)} (${pct(d.position.gain_pct)})` : "—")}
+        </div>` : ""}
+        <div class="metricas" style="margin-top:14px">
           ${metrica("PER", number(v.per_trailing, 1))}
           ${metrica("PER fwd", number(v.per_forward, 1))}
           ${metrica("EV/EBITDA", number(v.ev_ebitda, 1))}
@@ -862,28 +537,42 @@ async function viewStock(ticker, assumptions = {}, silencioso = false) {
   }
 }
 
-function renderVerdict(v) {
-  if (!v) return "";
-  const color = v.sentiment || "ambar";
-  const icon = color === "verde" ? "▲" : color === "rojo" ? "▼" : "◆";
+function renderScore(s) {
+  if (!s) return "";
+  const color = s.sentiment || "ambar";
   let html = `<div class="veredicto veredicto-${color}">`;
-  html += `<div class="veredicto-header"><span class="veredicto-icono ${color}">${icon}</span> ${esc(v.summary)}</div>`;
-  if (v.pros && v.pros.length) {
+  html += `<div class="veredicto-header">
+      <span class="metrica" data-glosario="Nota" style="font-size:22px;font-weight:700;margin-right:10px">${s.score}/10</span>
+      <span>${esc(s.label)}</span>
+    </div>`;
+  if (s.coverage_warning) html += `<div class="nota">${esc(s.coverage_warning)}</div>`;
+
+  (s.pillars || []).filter((p) => p.subscore !== null).forEach((p) => {
+    const anchoPct = Math.round((p.subscore + 1) * 50); // -1..1 -> 0..100
+    html += `<div class="progreso">
+      <div class="fila"><span class="metrica" data-glosario="${esc(p.name_es)}">${esc(p.name_es)} (${number(p.weight, 0)} %)</span>
+        <b>${number(p.subscore, 2)}</b></div>
+      <div class="barra"><div class="relleno" style="width:${anchoPct}%"></div></div>
+    </div>`;
+  });
+
+  if (s.pros && s.pros.length) {
     html += `<div class="veredicto-seccion"><div class="veredicto-subtitulo verde">A favor</div><ul>`;
-    v.pros.forEach((t) => { html += `<li>${esc(t)}</li>`; });
+    s.pros.forEach((t) => { html += `<li>${esc(t)}</li>`; });
     html += `</ul></div>`;
   }
-  if (v.cons && v.cons.length) {
+  if (s.cons && s.cons.length) {
     html += `<div class="veredicto-seccion"><div class="veredicto-subtitulo rojo">En contra</div><ul>`;
-    v.cons.forEach((t) => { html += `<li>${esc(t)}</li>`; });
+    s.cons.forEach((t) => { html += `<li>${esc(t)}</li>`; });
     html += `</ul></div>`;
   }
-  if (v.watch_points && v.watch_points.length) {
-    html += `<div class="veredicto-seccion"><div class="veredicto-subtitulo ambar">A tener en cuenta</div><ul>`;
-    v.watch_points.forEach((t) => { html += `<li>${esc(t)}</li>`; });
+  if (s.red_flags && s.red_flags.length) {
+    html += `<div class="veredicto-seccion"><div class="veredicto-subtitulo rojo">Senales de alerta</div><ul>`;
+    s.red_flags.forEach((t) => { html += `<li>${esc(t)}</li>`; });
     html += `</ul></div>`;
   }
-  html += `<div class="veredicto-aviso">${esc(v.notice)}</div>`;
+  html += `<div class="metrica tenue" data-glosario="Cobertura" style="background:none;padding:6px 0;font-size:12px">Cobertura de datos: ${number(s.coverage_pct, 0)} %</div>`;
+  html += `<div class="veredicto-aviso">${esc(s.notice)}</div>`;
   html += `</div>`;
   return html;
 }
@@ -941,9 +630,7 @@ function changeView(name) {
   document.querySelectorAll(".vista").forEach((v) =>
     v.classList.toggle("activa", v.id === `vista-${name}`));
 
-  if (name === "panel") loadDashboard();
-  if (name === "movimientos") { loadTransactions(); loadRecurring(); }
-  if (name === "cartera") loadPortfolio();
+  if (name === "cartera") { loadPortfolio(); loadProfile(); }
   if (name === "ayuda") loadHelp();
 }
 
@@ -973,33 +660,13 @@ function startAutoRefresh() {
 /* ----------------------------------------------------------------- ayuda */
 
 const HELP_CARD = {
-  panel: {
-    titulo: "Panel",
-    contenido: `<p>Vista general: patrimonio, ahorro, ingresos/gastos y plusvalia de la cartera.</p>
-      <ul>
-        <li><b>Patrimonio</b> = efectivo en cuentas + valor de mercado de la cartera.</li>
-        <li><b>Ahorro</b> = ingresos - gastos del mes. La tasa es el porcentaje.</li>
-        <li><b>Cuentas</b> — crear, renombrar o eliminar. Saldo se recalcula solo.</li>
-        <li><b>Presupuestos</b> — limite por categoria. Se compara con gasto real.</li>
-      </ul>`,
-  },
-  movimientos: {
-    titulo: "Movimientos",
-    contenido: `<p>Registrar gastos e ingresos. Importes siempre positivos; el tipo va en campo aparte.</p>
-      <ul>
-        <li><b>Fecha</b> por defecto es hoy. Poner la real si es apunte atrasado.</li>
-        <li><b>Categorias</b> — reutilizar existentes (minusculas, sin acentos).</li>
-        <li><b>Filtros</b> — mes, tipo y texto libre.</li>
-        <li><b>Recurrentes</b> — nominas, alquiler. Se generan con "Generar pendientes".</li>
-        <li><b>Traspasos</b> — mover saldo sin contar como ingreso/gasto.</li>
-      </ul>`,
-  },
   cartera: {
     titulo: "Cartera",
     contenido: `<p>Gestionar posiciones de inversion. Compras/ventas y valor actualizado.</p>
       <ul>
+        <li><b>Mi perfil</b> — pondera la nota de cada accion segun tu riesgo, horizonte y preferencia.</li>
         <li><b>Tarjetas</b> — valor de mercado, plusvalia latente, realizado.</li>
-        <li><b>Tabla</b> — coste medio, precio, variacion, peso, P&L.</li>
+        <li><b>Tabla</b> — coste medio, precio, variacion, peso, P&L y Nota.</li>
         <li><b>Actualizar precios</b> — boton manual o auto cada 60s si mercado abierto.</li>
         <li><b>Watchlist</b> — seguir tickers sin posicion.</li>
         <li><b>Monedas</b> — compra en EUR, cotiza en USD = conversion automatica.</li>
@@ -1007,24 +674,14 @@ const HELP_CARD = {
   },
   acciones: {
     titulo: "Acciones",
-    contenido: `<p>Ficha completa: cotizacion, fundamentales, historico y valoracion.</p>
+    contenido: `<p>Ficha completa: cotizacion, fundamentales, historico, valoracion y nota.</p>
       <ul>
         <li><b>Busqueda</b> — nombre o ticker. Europeos sondeados aparte.</li>
+        <li><b>Nota 1-10</b> — sintetiza seis pilares segun tu perfil inversor.</li>
         <li><b>Fundamentales</b> — PER, EV/EBITDA, margen, ROE, dividendo.</li>
         <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles.</li>
         <li><b>Valoracion</b> — DCF con sensibilidad + Graham.</li>
       </ul>`,
-  },
-  movimientos_vacio: {
-    titulo: "Como apuntar gastos",
-    contenido: `<p>Ve a la pestana <b>Movimientos</b> y rellena el formulario:</p>
-      <ul>
-        <li>Selecciona <b>Gasto</b> o <b>Ingreso</b>.</li>
-        <li>Pon el <b>importe</b> (positivo).</li>
-        <li>Escribe una <b>categoria</b> (reutiliza las que ya existen).</li>
-        <li>La <b>fecha</b> por defecto es hoy.</li>
-      </ul>
-      <p>Tambien puedes importar CSV del banco desde Claude Code: "importa este CSV del banco".</p>`,
   },
   cartera_vacio: {
     titulo: "Como registrar una compra",
@@ -1146,30 +803,23 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".pestana").forEach((b) =>
     b.addEventListener("click", () => changeView(b.dataset.view)));
 
-  document.querySelector('#form-movimiento input[name="date"]').value = today();
-  document.getElementById("filtro-mes").value = currentMonth();
-
-  wireForm("form-movimiento", "finance", "transaction_create",
-    () => { loadTransactions(); document.querySelector('#form-movimiento input[name="date"]').value = today(); });
-  wireForm("form-cuenta", "finance", "account_create", loadDashboard);
-  wireForm("form-presupuesto", "finance", "budget_set", loadDashboard);
-  wireForm("form-traspaso", "finance", "transfer_create",
-    () => { loadTransactions(); loadDashboard(); });
-  wireForm("form-recurrente", "finance", "recurring_create", loadRecurring);
   wireForm("form-operacion", "finance", "trade_create", loadPortfolio);
   wireForm("form-watchlist", "finance", "watchlist_add", loadWatchlist);
+
+  document.getElementById("form-perfil").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("finance", "profile_set", formData(ev.target));
+      notify("Perfil guardado", "bueno");
+      if (CURRENT_STOCK) viewStock(CURRENT_STOCK.ticker, CURRENT_STOCK.assumptions);
+    } catch (e) {
+      notify(e.message, "malo");
+    }
+  });
 
   document.getElementById("form-buscar").addEventListener("submit", (ev) => {
     ev.preventDefault();
     search(new FormData(ev.target).get("query"));
-  });
-
-  ["filtro-mes", "filtro-tipo"].forEach((id) =>
-    document.getElementById(id).addEventListener("change", () => loadTransactions()));
-  let t;
-  document.getElementById("filtro-texto").addEventListener("input", () => {
-    clearTimeout(t);
-    t = setTimeout(() => loadTransactions(), 320);
   });
 
   document.getElementById("btn-refrescar-cartera").addEventListener("click", () => loadPortfolio());
@@ -1197,23 +847,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("btn-aplicar-recurrentes").addEventListener("click", async () => {
-    try {
-      const sim = await api("finance", "recurring_apply", { simulate: true });
-      if (!sim.pending) return notify("No hay movimientos pendientes de generar");
-      const detalle = sim.detail.slice(0, 8).map((p) => `  ${p.date}  ${p.concept}  ${p.amount}`).join("\n");
-      if (!confirm(`Se generaran ${sim.pending} movimientos:\n\n${detalle}${
-        sim.pending > 8 ? "\n  …" : ""}\n\n¿Continuar?`)) return;
-      const r = await api("finance", "recurring_apply", { simulate: false });
-      notify(`${r.pending} movimientos generados`, "bueno");
-      loadRecurring();
-      loadTransactions();
-    } catch (e) {
-      notify(e.message, "malo");
-    }
-  });
-
   document.getElementById("estado").textContent = `datos locales · ${CURRENCY}`;
-  loadDashboard();
+  changeView("acciones");
   startAutoRefresh();
 });

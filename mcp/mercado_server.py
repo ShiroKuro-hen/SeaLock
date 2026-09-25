@@ -20,6 +20,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
+import scoring
 from mcp_common import MCPServer, log
 
 USER_AGENT = (
@@ -1140,6 +1141,42 @@ def exchange_rate(from_currency, to_currency=None):
         "rate": data["price"],
         "change_pct": data.get("change_pct"),
     }
+
+
+@srv.tool(
+    "stock_score",
+    "1-10 buy/sell score from quote, fundamentals, historical and valuation data, "
+    "weighted by investor profile. Never sends profile data over the network.",
+    {
+        "ticker": {"type": "string"},
+        "risk_tolerance": {"type": "string", "enum": ["conservative", "moderate", "aggressive"]},
+        "horizon": {"type": "string", "enum": ["short", "medium", "long"]},
+        "preference": {"type": "string", "enum": ["dividend", "growth", "balanced"]},
+    },
+    required=["ticker"],
+)
+def stock_score(ticker, risk_tolerance=None, horizon=None, preference=None):
+    ticker = ticker.upper().strip()
+    q = quote(tickers=[ticker])["quotes"]
+    q = q[0] if q else {}
+    f = fundamentals(ticker)
+    try:
+        h = historical(ticker=ticker, date_range="1y")
+    except Exception:  # noqa: BLE001 - momentum pillar just skips
+        h = {}
+    try:
+        dcf = dcf_valuation(ticker=ticker)
+    except Exception:  # noqa: BLE001 - optional input
+        dcf = None
+    try:
+        graham = graham_valuation(ticker=ticker)
+    except Exception:  # noqa: BLE001 - optional input
+        graham = None
+
+    profile = {k: v for k, v in {
+        "risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference,
+    }.items() if v}
+    return scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile or None)
 
 
 if __name__ == "__main__":

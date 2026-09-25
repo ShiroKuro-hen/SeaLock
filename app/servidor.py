@@ -18,6 +18,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -27,6 +28,9 @@ sys.path.insert(0, os.path.join(ROOT, "mcp"))
 
 import finanzas_server as fin  # noqa: E402
 import mercado_server as mer  # noqa: E402
+import scoring  # noqa: E402
+
+SCORE_CACHE_TTL = 3600  # seconds; avoids hammering Yahoo when the Cartera tab polls
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 PORT = int(os.environ.get("SEALOCK_PORT", "8765"))
@@ -179,30 +183,35 @@ def portfolio_valued():
     }
 
 
-def dashboard():
-    """Everything the main screen needs, in a single request."""
-    accounts = fin.accounts_list()
-    cash = round(sum(a["balance"] for a in accounts["accounts"]), 2)
-    portfolio = portfolio_valued()
-    portfolio_value = portfolio["totals"].get("market_value", 0) or 0
-
+def _position_snapshot(ticker, holding, quote_data):
+    """Quantity/cost/current value for a single held ticker, using the quote already
+    fetched for the ficha. No cross-currency conversion here (that full treatment
+    lives in portfolio_valued): a single-stock detail assumes cost and quote share
+    a currency, which holds for the common case.
+    # ponytail: no FX conversion; extend like portfolio_valued's _rates_to_base if
+    # a user reports a mismatched-currency position looking wrong here.
+    """
+    if not holding:
+        return None
+    price = quote_data.get("price") if isinstance(quote_data, dict) else None
+    qty = holding.get("quantity")
+    cost_total = holding.get("total_cost")
+    value = round(qty * price, 2) if price else None
+    gain = round(value - cost_total, 2) if value is not None and cost_total is not None else None
+    gain_pct = round(100 * gain / cost_total, 2) if gain is not None and cost_total else None
     return {
-        "currency": CURRENCY,
-        "net_worth": round(cash + portfolio_value, 2),
-        "cash": cash,
-        "portfolio": round(portfolio_value, 2),
-        "unrealized_gain": portfolio["totals"].get("unrealized_gain"),
-        "accounts": accounts["accounts"],
-        "month": fin.period_summary(),
-        "evolution": fin.monthly_evolution(months=12)["series"],
-        "budgets": fin.budget_status()["budgets"],
-        "positions": portfolio["positions"][:5],
-        "no_price": portfolio.get("no_price", []),
+        "quantity": qty,
+        "average_cost": holding.get("average_cost"),
+        "invested": cost_total,
+        "currency": holding.get("currency"),
+        "current_value": value,
+        "gain": gain,
+        "gain_pct": gain_pct,
     }
 
 
 def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=2.5):
-    """Quote + fundamentals + history + valuation + news for a single security."""
+    """Quote + fundamentals + history + valuation + news + score for a single security."""
     output = {"ticker": ticker.upper().strip()}
 
     def try_section(key, fn):
@@ -222,157 +231,67 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
         terminal_growth_pct=terminal_growth_pct,
     ))
     try_section("graham", lambda: mer.graham_valuation(ticker=ticker))
-    output["verdict"] = _verdict(output)
+
+    def clean(key):
+        section = output.get(key)
+        return None if not isinstance(section, dict) or "error" in section else section
+
+    holding = None
+    try:
+        portfolio = fin.portfolio_view()
+        holding = next((p for p in portfolio["positions"] if p["ticker"] == output["ticker"]), None)
+    except Exception:  # noqa: BLE001 - score just runs without holding context
+        holding = None
+
+    output["position"] = _position_snapshot(output["ticker"], holding, clean("quote") or {})
+    output["score"] = scoring.score_stock(
+        clean("quote") or {}, clean("fundamentals") or {}, clean("historical") or {},
+        dcf=clean("dcf"), graham=clean("graham"), profile=fin.profile_get(), holding=holding,
+    )
     return output
 
 
-def _verdict(data):
-    """Generate plain-language verdict from stock data. NOT investment advice."""
-    f = data.get("fundamentals") or {}
-    c = data.get("quote") or {}
-    h = data.get("historical") or {}
-    dcf = data.get("dcf") or {}
-    gra = data.get("graham") or {}
-    v = f.get("valuation") or {}
-    r = f.get("profitability") or {}
-    s = f.get("financial_strength") or {}
-    d = f.get("dividend") or {}
-    ri = f.get("risk") or {}
-    pf = f.get("per_share") or {}
+_score_cache = {}  # ticker -> (timestamp, score dict)
 
-    scores = []
-    notes = []
 
-    # --- valuation ---
-    per = v.get("per_trailing")
-    ev = v.get("ev_ebitda")
-    margin = dcf.get("margin_of_safety_pct")
-
-    if per is not None:
-        if per < 15:
-            scores.append(("valuation", 1, f"PER {per:.1f} dentro de rango barato"))
-        elif per < 25:
-            scores.append(("valuation", 0, f"PER {per:.1f} razonable"))
-        else:
-            scores.append(("valuation", -1, f"PER {per:.1f} elevado, mercado espera mucho crecimiento"))
-    if ev is not None:
-        if ev < 10:
-            scores.append(("valuation", 1, f"EV/EBITDA {ev:.1f} sugiere precio contenido"))
-        elif ev > 18:
-            scores.append(("valuation", -1, f"EV/EBITDA {ev:.1f} alto"))
-    if margin is not None:
-        if margin > 30:
-            scores.append(("valuation", 1, f"DCF con margen de seguridad del {margin:.0f}%"))
-        elif margin < 0:
-            scores.append(("valuation", -1, f"DCF indica sobrevaloracion del {abs(margin):.0f}%"))
-
-    # --- trend ---
-    rsi = h.get("rsi_14")
-    ret = h.get("period_return_pct")
-    m50 = h.get("sma_50")
-    m200 = h.get("sma_200")
-    price = c.get("price")
-
-    if rsi is not None:
-        if rsi > 75:
-            notes.append("RSI sobrecomprado, posible retroceso a corto plazo")
-        elif rsi < 30:
-            scores.append(("trend", 1, "RSI sobrevendido, posible punto de entrada"))
-    if ret is not None:
-        if ret > 20:
-            scores.append(("trend", 1, f"+{ret:.0f}% en el ultimo ano, momentum fuerte"))
-        elif ret < -20:
-            scores.append(("trend", -1, f"{ret:.0f}% en el ultimo ano, tendencia bajista"))
-    if m50 and m200 and price:
-        if price > m50 > m200:
-            scores.append(("trend", 1, "Precio por encima de medias 50 y 200, tendencia alcista"))
-        elif price < m50 < m200:
-            scores.append(("trend", -1, "Precio por debajo de medias 50 y 200, tendencia bajista"))
-
-    # --- solidity ---
-    roe = r.get("roe_pct")
-    net_margin = r.get("net_margin_pct")
-    debt = s.get("net_debt")
-
-    if roe is not None:
-        if roe > 15:
-            scores.append(("solidity", 1, f"ROE del {roe:.0f}% indica buen rendimiento del capital"))
-        elif roe < 5:
-            scores.append(("solidity", -1, f"ROE del {roe:.0f}% bajo"))
-    if net_margin is not None and net_margin < 3:
-        notes.append("Margen neto muy bajo, poca eficiencia o margenes presionados")
-    if debt is not None and debt < 0:
-        scores.append(("solidity", 1, "Caja supera deuda: balanza financiera solida"))
-    elif debt is not None and s.get("ebitda") and debt / max(s["ebitda"], 1) > 3:
-        notes.append("Deuda neta superior a 3x EBITDA: apalancamiento elevado")
-
-    # --- dividend ---
-    dy = d.get("yield_pct")
-    payout = d.get("payout_pct")
-
-    if dy is not None:
-        if dy > 4:
-            scores.append(("dividend", 1, f"Dividendo del {dy:.1f}%, atractivo para renta fija"))
-        elif dy > 2.5:
-            scores.append(("dividend", 0, f"Dividendo del {dy:.1f}%, moderado"))
-    if payout is not None and payout > 90:
-        notes.append(f"Payout del {payout:.0f}%: dividendo puede no ser sostenible")
-
-    # --- risk ---
-    vol = h.get("annualized_volatility_pct")
-    dd = h.get("max_drawdown_pct")
-    beta = ri.get("beta")
-
-    if vol is not None:
-        if vol > 35:
-            notes.append(f"Volatilidad alta ({vol:.0f}%): fuertes oscilaciones de precio")
-        elif vol < 15:
-            scores.append(("risk", 1, f"Volatilidad baja ({vol:.0f}%): empresa estable"))
-    if dd is not None and dd < -40:
-        notes.append(f"Caida maxima historica del {abs(dd):.0f}%: considerar si aguantarias esa caida")
-
-    # --- build summary ---
-    total = sum(s[1] for s in scores)
-    positives = [s[2] for s in scores if s[1] > 0]
-    negatives = [s[2] for s in scores if s[1] < 0]
-
-    # These values are consumed directly as CSS class suffixes by app.js
-    # (estilo.css defines .veredicto-verde/.veredicto-ambar/.veredicto-rojo,
-    # not translated), so they stay Spanish rather than becoming green/amber/red.
-    if total >= 3:
-        sentiment_text = " Los indicadores apuntan mayormente a favor."
-        color = "verde"
-    elif total >= 1:
-        sentiment_text = " Mixto: hay argumentos a favor y en contra."
-        color = "ambar"
-    elif total >= -1:
-        sentiment_text = " Mixto, con algo de cautela."
-        color = "ambar"
-    else:
-        sentiment_text = " Los indicadores apuntan mayormente en contra."
-        color = "rojo"
-
-    return {
-        "sentiment": color,
-        "summary": (
-            f"Segun los datos disponibles ({c.get('market', 'mercado')}), "
-            f"{f.get('name', data.get('ticker', ''))} presenta un panorama{sentiment_text}"
-        ),
-        "pros": positives,
-        "cons": negatives,
-        "watch_points": notes,
-        "notice": (
-            "Esto es un resumen automatico de los datos publicos, no una recomendacion "
-            "de compra ni de venta. Cada inversion depende de tu situacion personal, "
-            "tu horizonte temporal y tu tolerancia al riesgo. Consulta a un asesor "
-            "financiero antes de tomar decisiones."
-        ),
-    }
+def portfolio_scores():
+    """One score per held ticker, cached in-process for an hour so the Cartera tab's
+    periodic refresh doesn't hammer Yahoo for the same handful of tickers."""
+    portfolio = fin.portfolio_view()
+    profile = fin.profile_get()
+    now = time.time()
+    out = {}
+    for p in portfolio["positions"]:
+        ticker = p["ticker"]
+        cached = _score_cache.get(ticker)
+        if cached and now - cached[0] < SCORE_CACHE_TTL:
+            out[ticker] = cached[1]
+            continue
+        try:
+            q = mer.quote(tickers=[ticker])["quotes"]
+            q = q[0] if q else {}
+            f = mer.fundamentals(ticker=ticker)
+            h = mer.historical(ticker=ticker, date_range="1y")
+            dcf = graham = None
+            try:
+                dcf = mer.dcf_valuation(ticker=ticker)
+            except Exception:  # noqa: BLE001 - optional input
+                pass
+            try:
+                graham = mer.graham_valuation(ticker=ticker)
+            except Exception:  # noqa: BLE001 - optional input
+                pass
+            result = scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile, holding=p)
+        except Exception as exc:  # noqa: BLE001 - surfaced per-ticker, not fatal
+            result = {"error": f"{type(exc).__name__}: {exc}"}
+        _score_cache[ticker] = (now, result)
+        out[ticker] = result
+    return {"scores": out}
 
 
 API["app"] = {
-    "dashboard": dashboard,
     "portfolio_valued": portfolio_valued,
+    "portfolio_scores": portfolio_scores,
     "stock_detail": stock_detail,
     "config": lambda: {"currency": CURRENCY, "database_path": fin.DB_PATH},
 }

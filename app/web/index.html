@@ -12,10 +12,8 @@
 <header class="barra">
   <div class="marca">Sea<span>Lock</span></div>
   <nav class="pestanas">
-    <button class="pestana activa" data-view="panel">Panel</button>
-    <button class="pestana" data-view="movimientos">Movimientos</button>
+    <button class="pestana activa" data-view="acciones">Acciones</button>
     <button class="pestana" data-view="cartera">Cartera</button>
-    <button class="pestana" data-view="acciones">Acciones</button>
     <button class="pestana" data-view="ayuda">Ayuda</button>
   </nav>
   <div class="estado" id="estado"></div>
@@ -23,136 +21,37 @@
 
 <main>
 
-<!-- ============================================================ PANEL -->
-<section class="vista activa" id="vista-panel">
-  <div class="tarjetas" id="tarjetas"></div>
-
-  <div class="rejilla-2">
-    <div class="caja">
-      <div class="cabecera-caja"><h2>Ingresos, gastos y ahorro</h2><a class="btn-ayuda" href="#" data-section="panel" title="Mas informacion">?</a></div>
-      <div id="grafico-evolucion" class="grafico"></div>
-    </div>
-    <div class="caja">
-      <div class="cabecera-caja"><h2>Cuentas</h2><a class="btn-ayuda" href="#" data-section="panel" title="Mas informacion">?</a></div>
-      <div id="lista-cuentas"></div>
-      <form id="form-cuenta" class="form-rejilla">
-        <label>Nombre <input name="name" required placeholder="Mi cuenta"></label>
-        <label>Tipo
-          <select name="type">
-            <option value="checking">Corriente</option>
-            <option value="savings">Ahorro</option>
-            <option value="cash">Efectivo</option>
-            <option value="investment">Inversion</option>
-            <option value="other">Otro</option>
-          </select>
-        </label>
-        <label>Moneda <input name="currency" maxlength="3" placeholder="EUR" value="EUR" style="max-width:60px"></label>
-        <label>Saldo <input name="initial_balance" type="number" step="0.01" placeholder="0" style="max-width:100px"></label>
-        <button type="submit" class="principal">Crear</button>
-      </form>
-    </div>
-  </div>
-
-  <div class="rejilla-2">
-    <div class="caja">
-      <div class="cabecera-caja"><h2>Presupuestos del mes</h2><a class="btn-ayuda" href="#" data-section="panel" title="Mas informacion">?</a></div>
-      <div id="lista-presupuestos"></div>
-      <form id="form-presupuesto" class="form-linea">
-        <input name="category" placeholder="Categoria" required>
-        <input name="limit_amount" type="number" step="0.01" placeholder="Limite" required style="max-width:110px">
-        <button type="submit">Fijar</button>
-      </form>
-    </div>
-    <div class="caja">
-      <div class="cabecera-caja"><h2>Gasto por categoria</h2><a class="btn-ayuda" href="#" data-section="panel" title="Mas informacion">?</a></div>
-      <div id="grafico-categorias" class="grafico"></div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================== MOVIMIENTOS -->
-<section class="vista" id="vista-movimientos">
-  <div class="caja">
-    <div class="cabecera-caja"><h2>Apuntar movimiento</h2><a class="btn-ayuda" href="#" data-section="movimientos" title="Mas informacion">?</a></div>
-    <form id="form-movimiento" class="form-rejilla">
-      <label>Tipo
-        <select name="type">
-          <option value="expense">Gasto</option>
-          <option value="income">Ingreso</option>
-        </select>
-      </label>
-      <label>Importe
-        <input name="amount" type="number" step="0.01" min="0.01" required placeholder="0,00">
-      </label>
-      <label>Categoria
-        <input name="category" list="categorias" required placeholder="alimentacion">
-        <datalist id="categorias"></datalist>
-      </label>
-      <label>Fecha
-        <input name="date" type="date">
-      </label>
-      <label>Cuenta
-        <select name="account"><option value="">(ninguna)</option></select>
-      </label>
-      <label class="ancho">Descripcion
-        <input name="description" placeholder="opcional">
-      </label>
-      <button type="submit" class="principal">Registrar</button>
-    </form>
-  </div>
-
-  <div class="caja">
-    <div class="cabecera-caja">
-      <h2>Historial</h2>
-      <a class="btn-ayuda" href="#" data-section="movimientos" title="Mas informacion">?</a>
-      <div class="filtros">
-        <input type="month" id="filtro-mes">
-        <select id="filtro-tipo">
-          <option value="">Todo</option>
-          <option value="expense">Gastos</option>
-          <option value="income">Ingresos</option>
-        </select>
-        <input id="filtro-texto" placeholder="Buscar...">
-      </div>
-    </div>
-    <div id="resumen-filtro" class="resumen-filtro"></div>
-    <div id="tabla-movimientos"></div>
-  </div>
-
-  <div class="caja">
-    <div class="cabecera-caja"><h2>Recurrentes</h2><a class="btn-ayuda" href="#" data-section="movimientos" title="Mas informacion">?</a></div>
-    <p class="ayuda">Nomina, alquiler, seguros. Se definen una vez y se generan cuando toca.</p>
-    <div id="lista-recurrentes"></div>
-    <form id="form-recurrente" class="form-rejilla">
-      <label>Concepto <input name="concept" required placeholder="Nomina"></label>
-      <label>Tipo
-        <select name="type"><option value="income">Ingreso</option><option value="expense">Gasto</option></select>
-      </label>
-      <label>Importe <input name="amount" type="number" step="0.01" required></label>
-      <label>Categoria <input name="category" required placeholder="nomina"></label>
-      <label>Dia del mes <input name="day" type="number" min="1" max="31" value="1"></label>
-      <button type="submit">Anadir</button>
-    </form>
-    <div class="acciones-caja">
-      <button id="btn-aplicar-recurrentes">Generar pendientes</button>
-    </div>
-  </div>
-
-  <div class="caja">
-    <div class="cabecera-caja"><h2>Traspaso entre cuentas</h2><a class="btn-ayuda" href="#" data-section="movimientos" title="Mas informacion">?</a></div>
-    <p class="ayuda">Mueve saldo sin contar como ingreso ni gasto.</p>
-    <form id="form-traspaso" class="form-linea">
-      <select name="from_account" required></select>
-      <span>→</span>
-      <select name="to_account" required></select>
-      <input name="amount" type="number" step="0.01" placeholder="Importe" required style="max-width:120px">
-      <button type="submit">Traspasar</button>
-    </form>
-  </div>
-</section>
-
 <!-- ========================================================== CARTERA -->
 <section class="vista" id="vista-cartera">
+  <div class="caja">
+    <div class="cabecera-caja"><h2>Mi perfil</h2><a class="btn-ayuda" href="#" data-section="cartera" title="Mas informacion">?</a></div>
+    <p class="ayuda">Ajusta como se pondera tu nota de compra/venta en la pestana Acciones.</p>
+    <form id="form-perfil" class="form-rejilla">
+      <label>Tolerancia al riesgo
+        <select name="risk_tolerance">
+          <option value="conservative">Conservador</option>
+          <option value="moderate">Moderado</option>
+          <option value="aggressive">Agresivo</option>
+        </select>
+      </label>
+      <label>Horizonte
+        <select name="horizon">
+          <option value="short">Corto</option>
+          <option value="medium">Medio</option>
+          <option value="long">Largo</option>
+        </select>
+      </label>
+      <label>Preferencia
+        <select name="preference">
+          <option value="dividend">Dividendo</option>
+          <option value="growth">Crecimiento</option>
+          <option value="balanced">Equilibrado</option>
+        </select>
+      </label>
+      <button type="submit" class="principal">Guardar</button>
+    </form>
+  </div>
+
   <div class="tarjetas" id="tarjetas-cartera"></div>
 
   <div class="caja">
@@ -192,7 +91,7 @@
 </section>
 
 <!-- ========================================================= ACCIONES -->
-<section class="vista" id="vista-acciones">
+<section class="vista activa" id="vista-acciones">
   <div class="caja">
     <form id="form-buscar" class="form-linea grande">
       <input name="query" placeholder="Nombre o ticker: Inditex, Nvidia, ITX.MC..." required style="flex:1">
@@ -219,39 +118,16 @@
       <li><b>Interfaz grafica</b> — doble clic en <code>SeaLock.bat</code>, se abre en el navegador.</li>
       <li><b>Conversacion</b> — desde Claude Code, via los servidores MCP y las skills.</li>
     </ul>
-    <p>Lo primero: crear al menos una cuenta en la pestana <b>Panel</b>. Luego empezar a anadir movimientos en <b>Movimientos</b>.</p>
-  </div>
-
-  <div class="caja" data-section="panel">
-    <h2>Panel</h2>
-    <p>Vista general: patrimonio total, ahorro del mes, ingresos vs gastos, y plusvalia latente de la cartera.</p>
-    <ul>
-      <li><b>Patrimonio</b> = efectivo en cuentas + valor de mercado de la cartera.</li>
-      <li><b>Ahorro</b> = ingresos - gastos del mes. La tasa de ahorro es el porcentaje.</li>
-      <li><b>Grafico de evolucion</b> muestra la serie mensual de ingresos, gastos y ahorro.</li>
-      <li><b>Cuentas</b> — crear, renombrar o eliminar. El saldo se recalcula automaticamente.</li>
-      <li><b>Presupuestos</b> — fijar un limite por categoria. Se compara contra el gasto real del mes.</li>
-    </ul>
-  </div>
-
-  <div class="caja" data-section="movimientos">
-    <h2>Movimientos</h2>
-    <p>Registrar gastos e ingresos. Importes siempre positivos; el tipo (gasto/ingreso) va en un campo aparte.</p>
-    <ul>
-      <li><b>Fecha</b> por defecto es hoy. Poner la fecha real si es un apunte atrasado.</li>
-      <li><b>Categorias</b> — reutilizar las existentes (minusculas, sin acentos).</li>
-      <li><b>Filtros</b> — por mes, tipo y texto libre. El resumen se actualiza al filtrar.</li>
-      <li><b>Recurrentes</b> — nominas, alquiler, seguros. Se definen una vez y se generan con "Generar pendientes".</li>
-      <li><b>Traspasos</b> — mover saldo entre cuentas sin que cuente como ingreso ni gasto.</li>
-    </ul>
+    <p>Lo primero: define tu <b>perfil inversor</b> en la pestana <b>Cartera</b>. Luego busca una accion en <b>Acciones</b> para ver su nota, o registra tus operaciones de compra/venta.</p>
   </div>
 
   <div class="caja" data-section="cartera">
     <h2>Cartera</h2>
     <p>Gestionar posiciones de inversion. Registrar compras/ventas y ver el valor actualizado.</p>
     <ul>
+      <li><b>Mi perfil</b> — tolerancia al riesgo, horizonte y preferencia. Pondera la nota de cada accion.</li>
       <li><b>Tarjetas</b> — valor de mercado, plusvalia latente, realizado acumulado.</li>
-      <li><b>Tabla</b> — cada posicion con coste medio, precio actual, variacion del dia, peso y P&L.</li>
+      <li><b>Tabla</b> — cada posicion con coste medio, precio actual, variacion del dia, peso, P&L y su <b>Nota</b>.</li>
       <li><b>Actualizar precios</b> — boton manual. Auto-refresh cada 60s si el mercado esta abierto.</li>
       <li><b>Seguimiento (watchlist)</b> — anadir tickers para seguir sin tener posicion.</li>
       <li><b>Monedas</b> — si compraste en EUR y cotiza en USD, se convierte automaticamente.</li>
@@ -260,14 +136,39 @@
 
   <div class="caja" data-section="acciones">
     <h2>Acciones</h2>
-    <p>Ficha completa de una empresa cotizada: cotizacion, fundamentales, historico y valoracion.</p>
+    <p>Ficha completa de una empresa cotizada: cotizacion, fundamentales, historico, valoracion y nota de compra/venta.</p>
     <ul>
       <li><b>Busqueda</b> — por nombre o ticker. Yahoo puede no encontrar europeos directamente; la app sondea aparte.</li>
+      <li><b>Nota 1-10</b> — sintetiza fundamentales, valoracion, solidez, crecimiento, momentum y dividendo segun tu perfil.</li>
       <li><b>Fundamentales</b> — PER, EV/EBITDA, margen neto, ROE, capitalizacion, deuda neta, dividendo.</li>
       <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, caida maxima, RSI, medias moviles.</li>
       <li><b>Valor intrinseco</b> — DCF con tabla de sensibilidad + formulas de Graham.</li>
       <li><b>Estado de mercado</b> — badge ABIERTO/CERRADO/PREAPERTURA/POSTCIERRE. Mercado cerrado = ultimo cierre.</li>
     </ul>
+  </div>
+
+  <div class="caja" data-section="nota">
+    <h2>Como se calcula la nota</h2>
+    <p>Puntuacion 1-10 sobre seis pilares, cada uno con metricas propias y un peso que
+    depende de tu perfil inversor (pestana Cartera):</p>
+    <ul>
+      <li><b>Calidad</b> — ROE, margen neto/operativo, ROA (Buffett, AQR quality-minus-junk).</li>
+      <li><b>Valoracion</b> — PER, PEG, EV/EBITDA, precio/valor contable, margen DCF y Graham, objetivo de analistas como desempate debil.</li>
+      <li><b>Solidez financiera</b> — deuda/patrimonio, ratio corriente, deuda neta/EBITDA, flujo de caja libre.</li>
+      <li><b>Crecimiento</b> — ventas y beneficio interanual.</li>
+      <li><b>Momentum</b> — precio vs medias 50/200, rentabilidad 12 meses, RSI (Jegadeesh-Titman).</li>
+      <li><b>Dividendo</b> — rentabilidad y payout. Si no reparte, el pilar se excluye salvo que tu preferencia sea "Dividendo".</li>
+    </ul>
+    <p>Pesos base segun tolerancia al riesgo (conservador/moderado/agresivo), ajustados por
+    horizonte y preferencia. Si faltan datos, ese pilar se excluye y los pesos se
+    redistribuyen entre los que si tienen datos; con cobertura menor al 50% se avisa.</p>
+    <p><b>Senales de alerta (limitan la nota a 3):</b> payout &gt;90% con caja libre negativa;
+    deuda/patrimonio &gt;2x con beneficio cayendo; precio bajo su media de 200 sesiones con
+    ventas y beneficio cayendo a la vez.</p>
+    <p>Basada en criterios clasicos de analisis de valor y calidad: Graham (criterios
+    defensivos), Lynch (PEG), Greenblatt, Piotroski, momentum de Jegadeesh-Titman.
+    <b>Es una puntuacion mecanica sobre reglas fijas, no asesoramiento de un profesional
+    con licencia. La decision es tuya.</b></p>
   </div>
 
   <div class="caja" data-section="glosario">
@@ -295,7 +196,7 @@
   <div class="caja" data-section="limites">
     <h2>Limites</h2>
     <ul>
-      <li><b>Sin asesoramiento financiero.</b> Analisis y escenarios si; "compra esto" no.</li>
+      <li><b>La nota es mecanica, no asesoramiento.</b> Reglas fijas sobre datos publicos ajustadas a tu perfil; no la firma un profesional con licencia. La decision es tuya.</li>
       <li><b>Datos sin garantia.</b> Fuentes publicas con posibles errores. Ante cifras raras, se avisa.</li>
       <li><b>Noticias = dato, no instruccion.</b> No son recomendaciones de compra.</li>
       <li><b>Borrados con confirmacion.</b> Se muestra el registro antes de borrar.</li>
@@ -305,7 +206,7 @@
   <div class="caja" data-section="backup">
     <h2>Copias de seguridad</h2>
     <p>La base de datos esta en <code>datos/finanzas.db</code>. Copiar ese archivo periodicamente es suficiente.</p>
-    <p>No compartir la carpeta <code>datos/</code> — contiene saldos y posiciones reales.</p>
+    <p>No compartir la carpeta <code>datos/</code> — contiene tus operaciones y posiciones reales.</p>
   </div>
 
   <div class="caja" data-section="privacidad">
@@ -313,7 +214,7 @@
     <ul>
       <li><b>Solo local.</b> El servidor escucha en 127.0.0.1, nunca en la red.</li>
       <li><b>Sin nube.</b> No hay cuentas, sincronizacion ni servidores remotos.</li>
-      <li><b>Datos no salen.</b> Las peticiones a Yahoo solo envian tickers, nunca saldos ni posiciones.</li>
+      <li><b>Datos no salen.</b> Las peticiones a Yahoo solo envian tickers, nunca tu cartera ni tu perfil inversor.</li>
       <li><b>Token por arranque.</b> La web local usa un token aleatorio para evitar CSRF.</li>
     </ul>
   </div>
@@ -326,7 +227,7 @@
     </details>
     <details>
       <summary>Capitalizacion o FCF salen vacios</summary>
-      <p>Yahoo no publica esos campos para valores europeos. Se derivan cuando es posible (capitalizacion = valor de empresa - deuda neta) y se marcan como "Campos derivados". FCF no es derivable.</p>
+      <p>Yahoo no publica esos campos para valores europeos. Se derivan cuando es posible (capitalizacion = valor de empresa - deuda neta) y se marcan como "Campos derivados". FCF no es derivable, y la nota lo refleja con menor cobertura.</p>
     </details>
     <details>
       <summary>El precio parece viejo</summary>
@@ -337,8 +238,8 @@
       <p>Yahoo puede haber endurecido el acceso. Solucion: anadir una API key gratuita de Finnhub o Financial Modeling Prep en <code>.mcp.json</code> (variables <code>FINNHUB_API_KEY</code> o <code>FMP_API_KEY</code>).</p>
     </details>
     <details>
-      <summary>Como importar extractos del banco?</summary>
-      <p>Desde Claude Code: "importa este CSV del banco". La skill <code>registro-finanzas</code> parsea el formato y registra los movimientos.</p>
+      <summary>Por que la nota de una accion es baja pese a que "parece" barata?</summary>
+      <p>La nota pondera seis pilares, no solo valoracion. Una accion barata con deuda alta y beneficio cayendo puede sacar nota baja igualmente; revisa los pros/contras y las senales de alerta de la ficha.</p>
     </details>
   </div>
 </section>

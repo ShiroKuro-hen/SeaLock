@@ -183,9 +183,6 @@ tbody tr:hover { background: var(--fondo-alt); }
   gap: 12px;
   align-items: end;
 }
-.form-rejilla .ancho { grid-column: span 2; }
-@media (max-width: 640px) { .form-rejilla .ancho { grid-column: span 1; } }
-
 .form-linea {
   display: flex;
   gap: 10px;
@@ -221,24 +218,7 @@ button.principal:hover { filter: brightness(1.12); color: #fff; }
 button.mini { padding: 4px 9px; font-size: 12px; }
 button.peligro:hover { border-color: var(--rojo); color: var(--rojo); }
 
-.filtros { display: flex; gap: 8px; flex-wrap: wrap; }
-.filtros input, .filtros select { padding: 6px 9px; font-size: 13px; }
-
 .acciones-caja { margin-top: 14px; display: flex; gap: 10px; }
-
-.resumen-filtro {
-  display: flex;
-  gap: 20px;
-  padding: 10px 0 14px;
-  font-size: 13px;
-  color: var(--texto-tenue);
-}
-.resumen-filtro b { color: var(--texto); font-variant-numeric: tabular-nums; }
-
-/* ---------------------------------------------------------- graficos */
-
-.grafico { width: 100%; min-height: 180px; }
-.grafico svg { width: 100%; height: auto; display: block; }
 
 /* --------------------------------------------------------- progreso */
 
@@ -256,8 +236,6 @@ button.peligro:hover { border-color: var(--rojo); color: var(--rojo); }
   overflow: hidden;
 }
 .progreso .relleno { height: 100%; background: var(--acento); border-radius: 4px; }
-.progreso .relleno.excedido { background: var(--rojo); }
-.progreso .relleno.cerca { background: var(--ambar); }
 
 /* ------------------------------------------------------------ ficha */
 
@@ -552,8 +530,3 @@ button.peligro:hover { border-color: var(--rojo); color: var(--rojo); }
   font-size: 11px;
   font-style: italic;
 }
-
-/* --- cuentas: editar/eliminar inline --- */
-.acc-cuenta { white-space: nowrap; }
-tr.editando { background: var(--fondo-alt); }
-tr.editando input, tr.editando select { padding: 5px 8px; font-size: 13px; width: 100%; }

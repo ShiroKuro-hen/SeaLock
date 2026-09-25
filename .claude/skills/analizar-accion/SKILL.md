@@ -36,10 +36,18 @@ monedas distintos, y elegir mal contamina toda la valoracion.
 **3. Valorar.** Ver la skill `valor-intrinseco`. Como minimo, un `market.dcf_valuation`
 con supuestos justificados y su tabla de sensibilidad.
 
-**4. Cruzar con la cartera.** Comprueba si ya se tiene la posicion
+**4. Calcular la nota.** Llama a `finance.profile_get` para conocer el perfil del
+usuario (riesgo, horizonte, preferencia) y pasalo a `market.stock_score`. Presenta el
+resultado con su etiqueta (`label`), los pilares con su peso y sub-nota, los pros/contras
+y cualquier `red_flags`. Si `coverage_pct` es bajo, avisa de que la nota se apoya en
+pocos datos. Deja claro que es una puntuacion mecanica, no un consejo personalizado.
+
+**5. Cruzar con la cartera.** Comprueba si ya se tiene la posicion
 (`finance.portfolio_view`) o esta en seguimiento (`finance.watchlist_list`). Si ya hay
 posicion, compara el precio actual con el coste medio y menciona la tesis original
-guardada en la watchlist: es lo que permite ver si la tesis sigue viva o se rompio.
+guardada en la watchlist: es lo que permite ver si la tesis sigue viva o se rompio. Pasa
+la posicion como `holding` si vuelves a llamar a `score_stock` directamente (la nota
+cambia de "Compra fuerte" a "Mantener o ampliar", etc.).
 
 ## Formato de salida
 
@@ -58,6 +66,10 @@ media de 5 anos" si.
 
 ### Valoracion
 Valor intrinseco estimado, margen de seguridad y el rango de la sensibilidad.
+
+### Nota: X/10 — <label>
+Pilares con su peso y sub-nota, pros/contras, senales de alerta si las hay, y el
+aviso de que es una puntuacion mecanica sobre datos publicos, no asesoramiento.
 
 ### Noticias que mueven la aguja (ultimos dias)
 3-5 titulares con fecha y por que importan. Descarta el ruido.
