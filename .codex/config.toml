@@ -1,0 +1,29 @@
+[mcp_servers.finance]
+command = "python"
+args = [
+    "-u",
+    "mcp/finanzas_server.py",
+]
+
+[mcp_servers.finance.env]
+SEALOCK_CURRENCY = "EUR"
+PYTHONIOENCODING = "utf-8"
+
+[mcp_servers.graft]
+command = "npx"
+args = [
+    "-y",
+    "@nanonets/graft",
+    "mcp",
+]
+
+[mcp_servers.market]
+command = "python"
+args = [
+    "-u",
+    "mcp/mercado_server.py",
+]
+
+[mcp_servers.market.env]
+SEALOCK_CURRENCY = "EUR"
+PYTHONIOENCODING = "utf-8"
