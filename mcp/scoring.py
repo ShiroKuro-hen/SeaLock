@@ -32,6 +32,10 @@ NOTICE = (
     "asesoramiento de un profesional con licencia. La decision es tuya."
 )
 
+# Max weight (% of portfolio base-currency value) a single position may reach before
+# "No ampliar" kicks in, by risk tolerance. Used by position_advice() for Recomendaciones.
+CONCENTRATION_LIMITS = {"conservative": 20, "moderate": 25, "aggressive": 35}
+
 
 def _lin(value, bad, good):
     """Score in [-1, 1]: linear from `bad` (-1) to `good` (+1), clamped.
@@ -387,3 +391,75 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
         "profile": {"risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference},
         "notice": NOTICE,
     }
+
+
+# ------------------------------------------------------------ recomendaciones
+
+
+def position_advice(score_result, weight_pct, pnl_pct, profile):
+    """Buy/hold/sell/trim guidance for one held position: pure rules over an existing
+    score_stock() result plus portfolio weight and P&L. No network, no I/O.
+
+    Returns {"action_key": <english code>, "action_es": <copy>, "reasons_es": [...]}.
+    action_key is a stable identifier for the UI (e.g. a badge color); action_es is
+    what gets shown.
+    """
+    profile = profile or {}
+    risk_tolerance = profile.get("risk_tolerance", "moderate")
+    limit = CONCENTRATION_LIMITS.get(risk_tolerance, CONCENTRATION_LIMITS["moderate"])
+    score = (score_result or {}).get("score")
+    over_limit = weight_pct is not None and weight_pct > limit
+
+    reasons = []
+    if score is not None:
+        reasons.append(f"Nota {score}/10.")
+    if weight_pct is not None:
+        reasons.append(f"Peso en cartera {weight_pct:.1f} % (limite {limit} % para tu perfil {risk_tolerance}).")
+    if pnl_pct is not None:
+        reasons.append(f"P/L {pnl_pct:+.1f} %.")
+
+    if score is not None and score <= 3:
+        action_key, action_es = "sell", "Considerar vender"
+    elif score is not None and score <= 4 and pnl_pct is not None and pnl_pct <= -20:
+        action_key, action_es = "review", "Revisar tesis (perdida y nota baja)"
+    elif over_limit:
+        action_key, action_es = "no_add", "No ampliar: concentracion alta"
+        if score is not None and score <= 5:
+            reasons.append("Nota mediocre y ya por encima del limite de concentracion: valorar reducir.")
+    elif score is not None and score >= 8:
+        action_key, action_es = "add", "Mantener o ampliar"
+    else:
+        action_key, action_es = "hold", "Mantener"
+
+    return {"action_key": action_key, "action_es": action_es, "reasons_es": reasons}
+
+
+def select_ideas(candidates, held_tickers, held_sectors, min_score=7):
+    """Rank not-held candidates into "new ideas": pure filter + sort, no I/O.
+
+    `candidates`: iterable of dicts with at least ticker/score/coverage_pct, optionally
+    sector (as scored by mercado_server.stock_score / app.servidor._score_ticker).
+    Excludes held tickers, coverage_pct < 50 and score < min_score. Sorted by score
+    desc, then coverage_pct desc. Tags `diversifies: true` when the sector isn't
+    among a non-empty `held_sectors` (with no holdings every idea would "diversify").
+    """
+    held_tickers = {t.upper() for t in (held_tickers or []) if t}
+    held_sectors = {s for s in (held_sectors or []) if s}
+
+    ideas = []
+    for c in candidates or []:
+        ticker = (c.get("ticker") or "").upper()
+        score, coverage = c.get("score"), c.get("coverage_pct")
+        if not ticker or ticker in held_tickers:
+            continue
+        if score is None or score < min_score:
+            continue
+        if coverage is None or coverage < 50:
+            continue
+        idea = dict(c)
+        idea["ticker"] = ticker
+        idea["diversifies"] = bool(held_sectors) and bool(c.get("sector")) and c.get("sector") not in held_sectors
+        ideas.append(idea)
+
+    ideas.sort(key=lambda c: (-c["score"], -(c.get("coverage_pct") or 0)))
+    return ideas

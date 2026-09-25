@@ -23,6 +23,8 @@ SeaLock/
 ├─ app/
 │  ├─ servidor.py             HTTP local + API JSON sobre las mismas funciones
 │  └─ web/                    index.html, estilo.css, app.js (sin frameworks)
+├─ recursos/
+│  └─ universo.json           Universo de candidatos para Recomendaciones (Dow Jones + EURO STOXX 50 + IBEX 35)
 ├─ .claude/skills/
 │  ├─ analizar-accion/        Ficha completa de una empresa cotizada, con su nota
 │  ├─ valor-intrinseco/       DCF, Graham, multiplos (+ references/metodos.md)
@@ -140,7 +142,9 @@ Si `fundamentals` devuelve error sistematico, Yahoo endurecio acceso. Solucion: 
 
 `app/servidor.py` no duplica logica: importa modulos MCP, llama funciones. Herramienta nueva MCP = API web automatica. Grupos de la API: `finance`, `market`, `app` (`/api/<grupo>/<tool>`).
 
-Tres endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `portfolio_scores` (una nota por posicion abierta, cacheada 1h en proceso para no machacar Yahoo en el auto-refresco).
+Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones).
+
+Cache compartida de inputs de mercado (`_raw_inputs`, 6h en proceso, por ticker): quote/fundamentals/historical/dcf/graham. `_score_ticker` recalcula `scoring.score_stock()` (puro, barato) sobre esos datos cacheados, asi que un cambio de perfil no vuelve a pedir nada a Yahoo. `portfolio_scores` y `recommendation_positions` puntuan en paralelo con `_score_many` (`ThreadPoolExecutor`, 4-6 workers); fallos por ticker devuelven `{"ticker","error"}` y nunca tumban el lote.
 
 Defensas (importa local — cualquier web en otra pestana pide a localhost):
 
@@ -159,6 +163,41 @@ como `holding` (cambia las etiquetas: "Compra fuerte" se vuelve "Mantener o ampl
 Devuelve `score`, `label`, `sentiment` (`verde`/`ambar`/`rojo`, sufijo de clase CSS),
 `pillars` (con `subscore` y `details`), `pros`, `cons`, `red_flags`, `coverage_pct` y
 `notice`.
+
+### Recomendaciones
+
+Pestana entre Acciones y Cartera. Sugiere sobre la cartera actual y propone ideas
+nuevas, sobre un universo de blue chips verificado, no sobre chivatazos.
+
+- **Universo** (`recursos/universo.json`): Dow Jones Industrial Average (30), EURO
+  STOXX 50 (50) e IBEX 35 (35), tickers formato Yahoo, deduplicados (un valor en dos
+  indices aparece una vez con ambos en `indices`). 111 tickers unicos verificados
+  contra Wikipedia el 2026-09-25 (`source` + `as_of` en el propio JSON) y sondeados
+  con `quote()` real. `recommendation_universe` amplia ese universo con la watchlist
+  y los tickers en cartera, sin red (instantaneo); el escaneo real ocurre aparte via
+  `stock_scores`.
+- **Puntuar ~110 tickers es caro**: `stock_scores` acepta hasta 8 tickers por
+  llamada y los puntua en paralelo (`_score_many`); la UI llama en tandas de 8,
+  mostrando progreso y repintando "Ideas nuevas" tras cada tanda.
+- **`scoring.position_advice(score_result, weight_pct, pnl_pct, profile)`** (puro):
+  accion sugerida por posicion.
+  - Limite de concentracion por perfil (`CONCENTRATION_LIMITS`): conservador 20%,
+    moderado 25%, agresivo 35% del valor de cartera en base.
+  - Nota <= 3 → "Considerar vender". Nota <= 4 y P/L <= -20% → "Revisar tesis".
+  - Peso > limite → "No ampliar: concentracion alta" (+ "valorar reducir" si nota <= 5).
+  - Nota >= 8 sin superar el limite → "Mantener o ampliar". Resto → "Mantener".
+- **`scoring.select_ideas(candidates, held_tickers, held_sectors, min_score=7)`**
+  (puro): candidatos no poseidos con nota >= 7, `coverage_pct` >= 50, ordenados por
+  nota desc y luego cobertura desc. Marca `diversifies: true` si el sector no esta
+  ya en la cartera. `app.js` reproduce este mismo filtro en `pickIdeas()` para poder
+  repintar tras cada tanda sin esperar al universo entero — logica corta (~10
+  lineas), la version fuente y con tests es la de `scoring.py`.
+- **Peso y P/L**: de `portfolio_valued()` (valores en moneda base), nunca recalculados
+  aparte.
+- **Ver una a una**: `location.hash` (`#rec/<indice>`) sobre la lista combinada
+  (posiciones primero, luego ideas) — el boton Atras del navegador funciona sin
+  codigo extra. "Ver ficha completa" abre la ficha de Acciones y anade un boton
+  "Volver a recomendaciones" que reabre el mismo indice.
 
 ### Glosario con rangos
 
@@ -202,8 +241,8 @@ Orden: A -> B1+B2+B3 -> C -> A6+B4.
 ## Pruebas
 
 ```bash
-python pruebas/prueba_humo.py    # ~30 checks: finance (9 tools) + market (11 tools) + scoring.py puro
-python pruebas/prueba_web.py     # ~23 checks: web API + defensas + B4 glosario
+python pruebas/prueba_humo.py    # ~50 checks: finance (9 tools) + market (11 tools) + scoring.py puro (incl. recomendaciones)
+python pruebas/prueba_web.py     # ~31 checks: web API + defensas + B4 glosario + recomendaciones
 ```
 
 Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fallo.

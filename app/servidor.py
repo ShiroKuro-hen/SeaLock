@@ -13,6 +13,7 @@ Security (important even though it's local):
   - Any request with a non-local Host or Origin is rejected (DNS rebinding).
 """
 
+import concurrent.futures
 import json
 import os
 import secrets
@@ -30,7 +31,11 @@ import finanzas_server as fin  # noqa: E402
 import mercado_server as mer  # noqa: E402
 import scoring  # noqa: E402
 
-SCORE_CACHE_TTL = 3600  # seconds; avoids hammering Yahoo when the Cartera tab polls
+RAW_CACHE_TTL = 6 * 3600  # seconds; quote/fundamentals/historical/dcf/graham per ticker.
+# Scoring ~110 universe tickers is network-heavy; caching the raw inputs (not the score)
+# means a profile change only re-runs scoring.score_stock (pure, cheap) instead of
+# refetching Yahoo. Also backs portfolio_scores, replacing its old score-only cache.
+UNIVERSE_PATH = os.path.join(ROOT, "recursos", "universo.json")
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 PORT = int(os.environ.get("SEALOCK_PORT", "8765"))
@@ -251,48 +256,180 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
     return output
 
 
-_score_cache = {}  # ticker -> (timestamp, score dict)
+_raw_cache = {}  # ticker -> (timestamp, {"quote", "fundamentals", "historical", "dcf", "graham"})
+
+
+def _fetch_raw(ticker):
+    """Quote/fundamentals/historical/dcf/graham for one ticker, no scoring. Network-heavy:
+    go through _raw_inputs() for the 6h cache instead of calling this directly."""
+    raw = {}
+    try:
+        q = mer.quote(tickers=[ticker])["quotes"]
+        raw["quote"] = q[0] if q else {}
+    except Exception as exc:  # noqa: BLE001
+        raw["quote"] = {}
+        raw["quote_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        raw["fundamentals"] = mer.fundamentals(ticker=ticker)
+    except Exception as exc:  # noqa: BLE001
+        raw["fundamentals"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        raw["historical"] = mer.historical(ticker=ticker, date_range="1y")
+    except Exception:  # noqa: BLE001 - momentum pillar just skips
+        raw["historical"] = {}
+    try:
+        raw["dcf"] = mer.dcf_valuation(ticker=ticker)
+    except Exception:  # noqa: BLE001 - optional input
+        raw["dcf"] = None
+    try:
+        raw["graham"] = mer.graham_valuation(ticker=ticker)
+    except Exception:  # noqa: BLE001 - optional input
+        raw["graham"] = None
+    return raw
+
+
+def _raw_inputs(ticker):
+    """Raw market data for a ticker, cached 6h in-process. Reused across profile changes
+    and across the Cartera/Recomendaciones tabs so they don't refetch the same ticker."""
+    now = time.time()
+    cached = _raw_cache.get(ticker)
+    if cached and now - cached[0] < RAW_CACHE_TTL:
+        return cached[1]
+    raw = _fetch_raw(ticker)
+    _raw_cache[ticker] = (now, raw)
+    return raw
+
+
+def _score_ticker(ticker, profile, holding=None):
+    """Score one ticker for a profile, from cached raw inputs. No network of its own:
+    scoring.score_stock is a pure function, so this is cheap to call per profile change."""
+    raw = _raw_inputs(ticker)
+    fundamentals = raw.get("fundamentals") or {}
+    ok_fundamentals = not fundamentals.get("error")
+    result = scoring.score_stock(
+        raw.get("quote") or {}, fundamentals, raw.get("historical") or {},
+        dcf=raw.get("dcf"), graham=raw.get("graham"), profile=profile, holding=holding,
+    )
+    result["ticker"] = ticker
+    result["sector"] = fundamentals.get("sector") if ok_fundamentals else None
+    result["name"] = (fundamentals.get("name") if ok_fundamentals else None) or (raw.get("quote") or {}).get("name")
+    return result
+
+
+def _score_many(tickers, profile, holdings=None):
+    """Score several tickers concurrently (network-bound, so threads help). Per-ticker
+    failures never fail the batch: they come back as {"ticker", "error"}."""
+    holdings = holdings or {}
+    tickers = list(dict.fromkeys(tickers))  # de-dup, keep order
+    if not tickers:
+        return {}
+
+    def run(ticker):
+        try:
+            return ticker, _score_ticker(ticker, profile, holding=holdings.get(ticker))
+        except Exception as exc:  # noqa: BLE001 - surfaced per-ticker, not fatal
+            return ticker, {"ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(tickers))) as ex:
+        return dict(ex.map(run, tickers))
 
 
 def portfolio_scores():
-    """One score per held ticker, cached in-process for an hour so the Cartera tab's
-    periodic refresh doesn't hammer Yahoo for the same handful of tickers."""
+    """One score per held ticker. Thin caller over the shared 6h raw-input cache, scored
+    concurrently, so the Cartera tab's periodic refresh doesn't hammer Yahoo."""
     portfolio = fin.portfolio_view()
     profile = fin.profile_get()
-    now = time.time()
-    out = {}
-    for p in portfolio["positions"]:
-        ticker = p["ticker"]
-        cached = _score_cache.get(ticker)
-        if cached and now - cached[0] < SCORE_CACHE_TTL:
-            out[ticker] = cached[1]
-            continue
-        try:
-            q = mer.quote(tickers=[ticker])["quotes"]
-            q = q[0] if q else {}
-            f = mer.fundamentals(ticker=ticker)
-            h = mer.historical(ticker=ticker, date_range="1y")
-            dcf = graham = None
-            try:
-                dcf = mer.dcf_valuation(ticker=ticker)
-            except Exception:  # noqa: BLE001 - optional input
-                pass
-            try:
-                graham = mer.graham_valuation(ticker=ticker)
-            except Exception:  # noqa: BLE001 - optional input
-                pass
-            result = scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile, holding=p)
-        except Exception as exc:  # noqa: BLE001 - surfaced per-ticker, not fatal
-            result = {"error": f"{type(exc).__name__}: {exc}"}
-        _score_cache[ticker] = (now, result)
-        out[ticker] = result
-    return {"scores": out}
+    holdings = {p["ticker"]: p for p in portfolio["positions"]}
+    return {"scores": _score_many(list(holdings), profile, holdings)}
+
+
+_universe_cache = None
+
+
+def _load_universe():
+    global _universe_cache
+    if _universe_cache is None:
+        with open(UNIVERSE_PATH, encoding="utf-8") as fh:
+            _universe_cache = json.load(fh)
+    return _universe_cache
+
+
+def recommendation_universe():
+    """Candidate list for Recomendaciones: universe blue chips + watchlist + held tickers,
+    deduped. No network — the UI scores them separately via stock_scores, in batches."""
+    universe = _load_universe()
+    candidates = {s["ticker"]: {"ticker": s["ticker"], "name": s["name"], "indices": s["indices"]}
+                  for s in universe["stocks"]}
+
+    try:
+        held = sorted({p["ticker"] for p in fin.portfolio_view()["positions"]})
+    except Exception:  # noqa: BLE001 - the tab still works, just without held-aware dedup
+        held = []
+    try:
+        watchlist = fin.watchlist_list()["watchlist"]
+    except Exception:  # noqa: BLE001
+        watchlist = []
+
+    for ticker in held:
+        candidates.setdefault(ticker, {"ticker": ticker, "name": None, "indices": []})
+    for w in watchlist:
+        entry = candidates.setdefault(w["ticker"], {"ticker": w["ticker"], "name": None, "indices": []})
+        entry["name"] = entry["name"] or w.get("name")
+
+    return {
+        "candidates": sorted(candidates.values(), key=lambda c: c["ticker"]),
+        "held": held,
+        "profile": fin.profile_get(),
+        "source": universe.get("source"),
+        "as_of": universe.get("as_of"),
+    }
+
+
+def stock_scores(tickers):
+    """Score up to 8 tickers concurrently, for the Recomendaciones batched loader."""
+    tickers = list(dict.fromkeys(t.upper().strip() for t in (tickers or []) if t))[:8]
+    if not tickers:
+        return {"scores": {}}
+    profile = fin.profile_get()
+    try:
+        holdings = {p["ticker"]: p for p in fin.portfolio_view()["positions"]}
+    except Exception:  # noqa: BLE001 - scoring still works without holding context
+        holdings = {}
+    return {"scores": _score_many(tickers, profile, holdings)}
+
+
+def recommendation_positions():
+    """Advice for every held position: score + portfolio weight/P&L + position_advice
+    rules. Small enough (a real portfolio has few positions) to score in one call,
+    unlike the ~110-ticker universe which the UI batches through stock_scores."""
+    valued = portfolio_valued()
+    profile = fin.profile_get()
+    holdings_by_ticker = {r["ticker"]: r for r in valued["positions"]}
+    scores = _score_many(list(holdings_by_ticker), profile, holdings_by_ticker)
+
+    out = []
+    for ticker, row in holdings_by_ticker.items():
+        score_result = scores.get(ticker) or {}
+        advice = scoring.position_advice(score_result, row.get("weight_pct"), row.get("gain_pct"), profile)
+        out.append({
+            "ticker": ticker,
+            "name": row.get("name") or score_result.get("name"),
+            "score": score_result,
+            "weight_pct": row.get("weight_pct"),
+            "gain_pct": row.get("gain_pct"),
+            "advice": advice,
+        })
+    out.sort(key=lambda r: -(r["weight_pct"] or 0))
+    return {"positions": out, "profile": profile}
 
 
 API["app"] = {
     "portfolio_valued": portfolio_valued,
     "portfolio_scores": portfolio_scores,
     "stock_detail": stock_detail,
+    "recommendation_universe": recommendation_universe,
+    "stock_scores": stock_scores,
+    "recommendation_positions": recommendation_positions,
     "config": lambda: {"currency": CURRENCY, "database_path": fin.DB_PATH},
 }
 

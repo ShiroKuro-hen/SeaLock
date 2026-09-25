@@ -159,6 +159,30 @@ try:
     code, r = call("/api/finance/watchlist_remove", {"ticker": "msft"})
     check("watchlist_remove via API", code == 200 and r["data"]["ok"], str(r))
 
+    # --- recomendaciones ---
+    code, r = call("/api/app/recommendation_universe", {})
+    u = r["data"]
+    check("recommendation_universe devuelve candidatos", code == 200 and len(u.get("candidates", [])) >= 90, str(r)[:200])
+    check("recommendation_universe trae fuente y fecha",
+          bool(u.get("source")) and bool(u.get("as_of")), str(u.get("source")))
+    check("recommendation_universe incluye la posicion en cartera (AAPL)",
+          "AAPL" in u.get("held", []), str(u.get("held")))
+
+    code, r = call("/api/app/stock_scores", {"tickers": []})
+    check("stock_scores con lista vacia devuelve ok", code == 200 and r["data"]["scores"] == {}, str(r))
+
+    code, r = call("/api/app/stock_scores", {"tickers": ["AAPL"]})
+    check("stock_scores puntua un ticker (red)",
+          code == 200 and "AAPL" in r["data"]["scores"], str(r)[:200], critical=False)
+
+    code, r = call("/api/app/recommendation_positions", {})
+    check("recommendation_positions devuelve una fila con accion sugerida (red)",
+          code == 200 and len(r["data"]["positions"]) == 1
+          and "action_key" in r["data"]["positions"][0]["advice"], str(r)[:200], critical=False)
+
+    code, _ = request("/api/app/recommendation_universe", {})
+    check("recommendation_universe rechaza llamada sin token", code == 403, f"codigo={code}")
+
     # B4: todo label con data-glosario en app.js tiene entrada en glosario.js
     with open(os.path.join(ROOT, "app", "web", "app.js"), encoding="utf-8") as f:
         app_js = f.read()

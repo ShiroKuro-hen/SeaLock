@@ -3,6 +3,7 @@
 const CURRENCY = window.SEALOCK.currency;
 let CURRENT_STOCK = null; // { ticker, assumptions, marketStatus } de la ultima ficha vista
 let PORTFOLIO_ANY_MARKET_OPEN = true; // gate del auto-refresco: sin nada abierto, no vale la pena sondear
+let REC_RETURN_INDEX = null; // indice en REC_COMBINED si la ficha se abrio desde Recomendaciones
 
 /* ------------------------------------------------------------------ util */
 
@@ -412,9 +413,10 @@ async function search(query) {
   }
 }
 
-async function viewStock(ticker, assumptions = {}, silencioso = false) {
+async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null) {
   const cont = document.getElementById("ficha");
   CURRENT_STOCK = { ticker, assumptions };
+  if (!silencioso) REC_RETURN_INDEX = fromRec;
 
   if (!silencioso) {
     cont.innerHTML = `<div class="caja"><div class="cargando">Analizando ${esc(ticker)}…</div></div>`;
@@ -515,6 +517,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false) {
       <div class="caja">
         <div class="acciones-caja">
           <button id="btn-seguir">Anadir a seguimiento</button>
+          ${REC_RETURN_INDEX !== null ? '<button id="btn-volver-rec">← Volver a recomendaciones</button>' : ""}
         </div>
         <p class="ayuda" style="margin:12px 0 0">
           Datos de fuentes publicas, precios diferidos ~15 min. Analisis, no recomendacion
@@ -525,11 +528,16 @@ async function viewStock(ticker, assumptions = {}, silencioso = false) {
 
     document.getElementById("form-dcf").addEventListener("submit", (ev) => {
       ev.preventDefault();
-      viewStock(ticker, formData(ev.target));
+      viewStock(ticker, formData(ev.target), false, REC_RETURN_INDEX);
     });
     document.getElementById("btn-seguir").addEventListener("click", async () => {
       await api("finance", "watchlist_add", { ticker, name: f.name || null });
       notify(`${ticker} anadido a seguimiento`, "bueno");
+    });
+    document.getElementById("btn-volver-rec")?.addEventListener("click", () => {
+      const idx = REC_RETURN_INDEX;
+      changeView("recomendaciones");
+      openRecViewer(idx);
     });
   } catch (e) {
     if (silencioso) notify(`No se pudo actualizar ${ticker}: ${e.message}`, "malo");
@@ -622,6 +630,262 @@ function renderValuation(d, cot) {
   return html || '<div class="vacio">Sin datos suficientes para valorar.</div>';
 }
 
+/* ---------------------------------------------------- RECOMENDACIONES */
+
+const TRAD_RIESGO = { conservative: "Conservador", moderate: "Moderado", aggressive: "Agresivo" };
+const TRAD_HORIZONTE = { short: "Corto", medium: "Medio", long: "Largo" };
+const TRAD_PREFERENCIA = { dividend: "Dividendo", growth: "Crecimiento", balanced: "Equilibrado" };
+
+let REC_POSITIONS = [];
+let REC_SCORES = {};
+let REC_IDEAS = [];
+let REC_COMBINED = [];
+let REC_LOADING = false;
+
+function rebuildRecCombined() {
+  REC_COMBINED = [
+    ...REC_POSITIONS.map((p) => ({ type: "position", ...p })),
+    ...REC_IDEAS.map((i) => ({ type: "idea", ...i })),
+  ];
+}
+
+/** Mismo filtro que scoring.select_ideas (Python, con sus propios tests), reproducido
+ * aqui en JS para poder repintar la lista tras cada tanda sin esperar al universo entero. */
+function pickIdeas(scores, meta, heldSectors) {
+  const ideas = [];
+  for (const [ticker, s] of Object.entries(scores)) {
+    if (!s || s.error) continue;
+    if (s.score === undefined || s.score < 7) continue;
+    if (s.coverage_pct === undefined || s.coverage_pct < 50) continue;
+    const m = meta[ticker] || {};
+    ideas.push({
+      ticker, name: m.name || s.name, indices: m.indices || [],
+      score: s.score, label: s.label, sentiment: s.sentiment, sector: s.sector,
+      coverage_pct: s.coverage_pct, pros: s.pros || [], score_full: s,
+      diversifies: heldSectors.size > 0 && !!s.sector && !heldSectors.has(s.sector),
+    });
+  }
+  ideas.sort((a, b) => b.score - a.score || b.coverage_pct - a.coverage_pct);
+  return ideas;
+}
+
+function renderRecPositions() {
+  const cont = document.getElementById("rec-posiciones");
+  if (!REC_POSITIONS.length) {
+    cont.innerHTML = '<div class="vacio">Sin posiciones abiertas. <a href="#" id="rec-ir-cartera">Ir a Cartera</a></div>';
+    document.getElementById("rec-ir-cartera")?.addEventListener("click", (e) => { e.preventDefault(); changeView("cartera"); });
+    return;
+  }
+  cont.innerHTML = `<div class="tabla-scroll"><table>
+    <thead><tr><th>Ticker</th><th class="num" data-glosario="Nota">Nota</th>
+      <th class="num" data-glosario="Peso en cartera">Peso</th>
+      <th class="num" data-glosario="Plusvalia latente vs. realizada">P&amp;L</th><th>Accion</th></tr></thead>
+    <tbody>${REC_POSITIONS.map((p, i) => {
+      const s = p.score || {};
+      return `<tr class="rec-fila" data-rec-idx="${i}" tabindex="0" role="button" aria-label="Ver detalle de ${esc(p.ticker)}">
+        <td><span class="ticker">${esc(p.ticker)}</span></td>
+        <td class="num">${s.error ? "—" : `<span class="${s.sentiment}">${s.score}/10</span>`}</td>
+        <td class="num">${p.weight_pct !== null && p.weight_pct !== undefined ? `${number(p.weight_pct, 1)} %` : "—"}</td>
+        <td class="num ${sign(p.gain_pct)}">${pct(p.gain_pct)}</td>
+        <td><span class="rec-accion rec-accion-${p.advice.action_key}">${esc(p.advice.action_es)}</span></td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+  document.querySelectorAll("#rec-posiciones [data-glosario]").forEach(makeFocusable);
+  wireRecItems(cont);
+}
+
+function renderRecIdeas() {
+  const cont = document.getElementById("rec-ideas");
+  if (!REC_IDEAS.length) {
+    cont.innerHTML = REC_LOADING
+      ? '<div class="cargando">Analizando candidatos…</div>'
+      : '<div class="vacio">Ninguna idea nueva alcanza nota 7 o mas por ahora.</div>';
+    return;
+  }
+  const offset = REC_POSITIONS.length;
+  cont.innerHTML = `<div class="rec-tarjetas">${REC_IDEAS.map((idea, i) => `
+    <div class="rec-idea-tarjeta" data-rec-idx="${offset + i}" tabindex="0" role="button"
+      aria-label="Ver detalle de ${esc(idea.ticker)}">
+      <div class="rec-idea-cab"><span class="ticker">${esc(idea.ticker)}</span>
+        <span class="${idea.sentiment}" style="font-weight:700">${idea.score}/10</span></div>
+      <div class="tenue" style="font-size:13px">${esc(idea.name || "")}</div>
+      <div style="margin-top:6px">${(idea.indices || []).map((ix) => `<span class="rec-badge">${esc(ix)}</span>`).join("")}
+        ${idea.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}</div>
+      <div class="tenue" style="font-size:13px;margin-top:4px">${esc(idea.label || "")}</div>
+      ${idea.pros && idea.pros.length ? `<ul class="rec-pros">${idea.pros.slice(0, 2).map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+    </div>`).join("")}</div>`;
+  wireRecItems(cont);
+}
+
+function wireRecItems(cont) {
+  cont.querySelectorAll("[data-rec-idx]").forEach((el) => {
+    const open = () => openRecViewer(Number(el.dataset.recIdx));
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+}
+
+function openRecViewer(index) {
+  location.hash = `#rec/${index}`;
+}
+
+function closeRecViewer() {
+  if (location.hash.startsWith("#rec/")) location.hash = "";
+  else {
+    document.getElementById("rec-visor").style.display = "none";
+    document.getElementById("rec-listas").style.display = "";
+  }
+}
+
+function renderRecViewer(index) {
+  const item = REC_COMBINED[index];
+  const visor = document.getElementById("rec-visor");
+  if (!item) { closeRecViewer(); return; }
+
+  document.getElementById("rec-listas").style.display = "none";
+  visor.style.display = "";
+  const total = REC_COMBINED.length;
+  const s = item.type === "position" ? (item.score || {}) : (item.score_full || {});
+
+  visor.innerHTML = `
+    <div class="caja">
+      <div class="rec-visor-nav">
+        <button id="rec-prev" ${index === 0 ? "disabled" : ""}>← Anterior</button>
+        <span class="tenue">${index + 1} / ${total}</span>
+        <button id="rec-next" ${index === total - 1 ? "disabled" : ""}>Siguiente →</button>
+      </div>
+      <h2 tabindex="-1" id="rec-visor-titulo">${esc(item.name || item.ticker)} <span class="tenue">${esc(item.ticker)}</span></h2>
+      ${(item.indices || []).length ? `<div>${item.indices.map((ix) => `<span class="rec-badge">${esc(ix)}</span>`).join("")}
+        ${item.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}</div>` : ""}
+      ${item.type === "position" ? `
+        <div class="metricas" style="margin:14px 0">
+          <div class="metrica"><div class="k">Peso</div><div class="v">${item.weight_pct !== null && item.weight_pct !== undefined ? `${number(item.weight_pct, 1)} %` : "—"}</div></div>
+          <div class="metrica"><div class="k">P&amp;L</div><div class="v ${sign(item.gain_pct)}">${pct(item.gain_pct)}</div></div>
+        </div>
+        <div class="rec-accion rec-accion-${item.advice.action_key}" style="display:inline-block;margin-bottom:8px">${esc(item.advice.action_es)}</div>
+        <ul>${(item.advice.reasons_es || []).map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+      ${renderScore(s)}
+      <div class="acciones-caja">
+        <button id="rec-volver-lista">Volver a la lista</button>
+        <button id="rec-ver-ficha">Ver ficha completa</button>
+      </div>
+    </div>`;
+
+  document.getElementById("rec-prev").addEventListener("click", () => openRecViewer(index - 1));
+  document.getElementById("rec-next").addEventListener("click", () => openRecViewer(index + 1));
+  document.getElementById("rec-volver-lista").addEventListener("click", closeRecViewer);
+  document.getElementById("rec-ver-ficha").addEventListener("click", () => {
+    changeView("acciones");
+    viewStock(item.ticker, {}, false, index);
+  });
+  document.getElementById("rec-visor-titulo").focus();
+}
+
+function maybeRestoreRecViewerFromHash() {
+  const m = location.hash.match(/^#rec\/(\d+)$/);
+  if (m && Number(m[1]) < REC_COMBINED.length) renderRecViewer(Number(m[1]));
+}
+
+window.addEventListener("hashchange", () => {
+  if (document.querySelector(".pestana.activa")?.dataset.view !== "recomendaciones") return;
+  const m = location.hash.match(/^#rec\/(\d+)$/);
+  if (m) renderRecViewer(Number(m[1]));
+  else {
+    document.getElementById("rec-visor").style.display = "none";
+    document.getElementById("rec-listas").style.display = "";
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  const visor = document.getElementById("rec-visor");
+  if (!visor || visor.style.display === "none") return;
+  if (e.key === "Escape") { closeRecViewer(); return; }
+  const m = location.hash.match(/^#rec\/(\d+)$/);
+  if (!m) return;
+  const idx = Number(m[1]);
+  if (e.key === "ArrowLeft" && idx > 0) openRecViewer(idx - 1);
+  if (e.key === "ArrowRight" && idx < REC_COMBINED.length - 1) openRecViewer(idx + 1);
+});
+
+async function loadRecommendations() {
+  if (REC_LOADING) return;
+  REC_LOADING = true;
+  document.getElementById("rec-listas").style.display = "";
+  document.getElementById("rec-visor").style.display = "none";
+  loading("rec-posiciones");
+  loading("rec-ideas");
+  const progreso = document.getElementById("rec-progreso");
+  progreso.style.display = "none";
+
+  let profile = null;
+  try {
+    profile = await api("finance", "profile_get");
+    document.getElementById("rec-perfil").innerHTML =
+      `Perfil activo: <b>${esc(TRAD_RIESGO[profile.risk_tolerance] || profile.risk_tolerance)}</b>, ` +
+      `horizonte <b>${esc(TRAD_HORIZONTE[profile.horizon] || profile.horizon)}</b>, ` +
+      `preferencia <b>${esc(TRAD_PREFERENCIA[profile.preference] || profile.preference)}</b>. ` +
+      `<a href="#" id="rec-cambiar-perfil">Cambiar en Cartera</a>`;
+    document.getElementById("rec-cambiar-perfil")?.addEventListener("click", (e) => { e.preventDefault(); changeView("cartera"); });
+  } catch (e) {
+    document.getElementById("rec-perfil").textContent = "No se pudo cargar el perfil.";
+  }
+
+  try {
+    const pos = await api("app", "recommendation_positions");
+    REC_POSITIONS = pos.positions;
+  } catch (e) {
+    REC_POSITIONS = [];
+    renderError("rec-posiciones", e);
+  }
+  REC_SCORES = {};
+  REC_IDEAS = [];
+  rebuildRecCombined();
+  renderRecPositions();
+  renderRecIdeas();
+  maybeRestoreRecViewerFromHash();
+
+  const heldSectors = new Set(REC_POSITIONS.map((p) => p.score && p.score.sector).filter(Boolean));
+
+  let universe;
+  try {
+    universe = await api("app", "recommendation_universe");
+  } catch (e) {
+    REC_LOADING = false;
+    renderError("rec-ideas", e);
+    return;
+  }
+  document.getElementById("rec-fuente").innerHTML =
+    `Universo: blue chips liquidos del Dow Jones, EURO STOXX 50 e IBEX 35 (datos ${esc(universe.as_of || "")}),
+     mas tu watchlist y tu cartera. No son chivatazos: la misma puntuacion mecanica que la ficha de Acciones.`;
+
+  const heldTickers = new Set(universe.held);
+  const meta = {};
+  universe.candidates.forEach((c) => { meta[c.ticker] = c; });
+  const toScore = universe.candidates.filter((c) => !heldTickers.has(c.ticker)).map((c) => c.ticker);
+
+  progreso.style.display = "";
+  let done = 0;
+  for (let i = 0; i < toScore.length; i += 8) {
+    const batch = toScore.slice(i, i + 8);
+    progreso.textContent = `Analizando ${done}/${toScore.length}...`;
+    try {
+      const r = await api("app", "stock_scores", { tickers: batch });
+      Object.assign(REC_SCORES, r.scores);
+    } catch (e) {
+      // Una tanda fallida no bloquea las siguientes.
+    }
+    done += batch.length;
+    progreso.textContent = `Analizando ${Math.min(done, toScore.length)}/${toScore.length}...`;
+    REC_IDEAS = pickIdeas(REC_SCORES, meta, heldSectors);
+    rebuildRecCombined();
+    renderRecIdeas();
+    maybeRestoreRecViewerFromHash();
+  }
+  progreso.style.display = "none";
+  REC_LOADING = false;
+  renderRecIdeas();
+}
+
 /* ------------------------------------------------------------ navegacion */
 
 function changeView(name) {
@@ -632,6 +896,7 @@ function changeView(name) {
 
   if (name === "cartera") { loadPortfolio(); loadProfile(); }
   if (name === "ayuda") loadHelp();
+  if (name === "recomendaciones") loadRecommendations();
 }
 
 /**
@@ -681,6 +946,15 @@ const HELP_CARD = {
         <li><b>Fundamentales</b> — PER, EV/EBITDA, margen, ROE, dividendo.</li>
         <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles.</li>
         <li><b>Valoracion</b> — DCF con sensibilidad + Graham.</li>
+      </ul>`,
+  },
+  recomendaciones: {
+    titulo: "Recomendaciones",
+    contenido: `<p>Sugerencias sobre tu cartera y un universo de blue chips (Dow Jones, EURO STOXX 50, IBEX 35) segun tu perfil.</p>
+      <ul>
+        <li><b>Tus posiciones</b> — accion sugerida por posicion: mantener, ampliar, vigilar o vender.</li>
+        <li><b>Ideas nuevas</b> — candidatos con nota 7+ que no tienes, marcando si diversifican sector.</li>
+        <li><b>Una a una</b> — clic abre el detalle, con Anterior/Siguiente y el boton Atras del navegador.</li>
       </ul>`,
   },
   cartera_vacio: {
@@ -823,6 +1097,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("btn-refrescar-cartera").addEventListener("click", () => loadPortfolio());
+  document.getElementById("btn-actualizar-recomendaciones").addEventListener("click", () => loadRecommendations());
 
   // Botones ? y links data-help → card emergente
   document.addEventListener("click", (e) => {

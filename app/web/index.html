@@ -13,6 +13,7 @@
   <div class="marca">Sea<span>Lock</span></div>
   <nav class="pestanas">
     <button class="pestana activa" data-view="acciones">Acciones</button>
+    <button class="pestana" data-view="recomendaciones">Recomendaciones</button>
     <button class="pestana" data-view="cartera">Cartera</button>
     <button class="pestana" data-view="ayuda">Ayuda</button>
   </nav>
@@ -90,6 +91,34 @@
   </div>
 </section>
 
+<!-- =================================================== RECOMENDACIONES -->
+<section class="vista" id="vista-recomendaciones">
+  <div class="caja">
+    <div class="cabecera-caja">
+      <h2>Recomendaciones</h2>
+      <a class="btn-ayuda" href="#" data-section="recomendaciones" title="Mas informacion">?</a>
+      <button id="btn-actualizar-recomendaciones">Actualizar</button>
+    </div>
+    <p class="ayuda" id="rec-perfil">Cargando perfil…</p>
+    <p id="rec-progreso" class="tenue" style="display:none"></p>
+    <div id="rec-fuente" class="nota"></div>
+  </div>
+
+  <div id="rec-listas">
+    <div class="caja">
+      <h2>Tus posiciones</h2>
+      <div id="rec-posiciones"></div>
+    </div>
+
+    <div class="caja">
+      <h2>Ideas nuevas</h2>
+      <div id="rec-ideas"></div>
+    </div>
+  </div>
+
+  <div id="rec-visor" style="display:none"></div>
+</section>
+
 <!-- ========================================================= ACCIONES -->
 <section class="vista activa" id="vista-acciones">
   <div class="caja">
@@ -145,6 +174,18 @@
       <li><b>Valor intrinseco</b> — DCF con tabla de sensibilidad + formulas de Graham.</li>
       <li><b>Estado de mercado</b> — badge ABIERTO/CERRADO/PREAPERTURA/POSTCIERRE. Mercado cerrado = ultimo cierre.</li>
     </ul>
+  </div>
+
+  <div class="caja" data-section="recomendaciones">
+    <h2>Recomendaciones</h2>
+    <p>Sugerencias segun tu cartera y tu perfil inversor, sobre un universo de valores grandes y liquidos: el Dow Jones, el EURO STOXX 50 y el IBEX 35, mas tu watchlist y lo que ya tienes en cartera. Datos de Yahoo, puntuados con las mismas reglas que la ficha de Acciones — no son chivatazos de fuentes sin verificar.</p>
+    <ul>
+      <li><b>Tus posiciones</b> — para cada valor en cartera: nota, peso, P&amp;L y una accion sugerida (mantener, ampliar, vigilar, vender) segun limites de concentracion por perfil.</li>
+      <li><b>Ideas nuevas</b> — valores del universo que no tienes, con nota 7 o mas, ordenados de mayor a menor nota. Se marca "Diversifica" si el sector no esta ya en tu cartera.</li>
+      <li><b>Ver una a una</b> — clic en cualquier fila o tarjeta abre su ficha de puntuacion completa, con "Anterior/Siguiente" y "Volver a la lista". El boton Atras del navegador tambien funciona.</li>
+      <li>Puntuar el universo completo tarda: se analiza en tandas, con progreso en pantalla.</li>
+    </ul>
+    <p><b>Es una puntuacion mecanica sobre datos publicos, no asesoramiento de un profesional con licencia. La decision es tuya.</b></p>
   </div>
 
   <div class="caja" data-section="nota">

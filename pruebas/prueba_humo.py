@@ -369,6 +369,82 @@ for risk in ("conservative", "moderate", "aggressive"):
                 combos_ok = False
 check("los pesos del perfil suman 100 en las 27 combinaciones", combos_ok)
 
+# ---------------------------------------------------------------- position_advice
+print("\n== recomendaciones: position_advice ==")
+
+MODERATE = {"risk_tolerance": "moderate", "horizon": "long", "preference": "balanced"}
+
+advice = scoring.position_advice({"score": 2}, weight_pct=5, pnl_pct=-10, profile=MODERATE)
+check("nota <= 3 sugiere vender", advice["action_key"] == "sell", str(advice))
+
+advice = scoring.position_advice({"score": 4}, weight_pct=5, pnl_pct=-25, profile=MODERATE)
+check("nota baja + perdida > 20% sugiere revisar tesis", advice["action_key"] == "review", str(advice))
+
+advice = scoring.position_advice({"score": 6}, weight_pct=30, pnl_pct=5, profile=MODERATE)
+check("peso sobre el limite moderado (25%) sugiere no ampliar", advice["action_key"] == "no_add", str(advice))
+
+advice = scoring.position_advice({"score": 5}, weight_pct=30, pnl_pct=5, profile=MODERATE)
+check("no ampliar + nota mediocre (<=5) anade razon de reducir",
+      advice["action_key"] == "no_add" and any("reducir" in r for r in advice["reasons_es"]),
+      str(advice))
+
+advice = scoring.position_advice({"score": 9}, weight_pct=10, pnl_pct=15, profile=MODERATE)
+check("nota alta y sin concentracion sugiere mantener o ampliar", advice["action_key"] == "add", str(advice))
+
+advice = scoring.position_advice({"score": 6}, weight_pct=10, pnl_pct=2, profile=MODERATE)
+check("caso neutro sugiere mantener", advice["action_key"] == "hold", str(advice))
+
+advice_cons = scoring.position_advice({"score": 6}, weight_pct=22,
+                                       pnl_pct=1, profile={"risk_tolerance": "conservative"})
+advice_agre = scoring.position_advice({"score": 6}, weight_pct=22,
+                                       pnl_pct=1, profile={"risk_tolerance": "aggressive"})
+check("limite de concentracion depende del perfil (22% dispara en conservador, no en agresivo)",
+      advice_cons["action_key"] == "no_add" and advice_agre["action_key"] != "no_add",
+      f"{advice_cons['action_key']} / {advice_agre['action_key']}")
+
+# ------------------------------------------------------------------- select_ideas
+print("\n== recomendaciones: select_ideas ==")
+
+CANDIDATES = [
+    {"ticker": "AAA", "score": 9, "coverage_pct": 80, "sector": "Technology"},
+    {"ticker": "BBB", "score": 8, "coverage_pct": 90, "sector": "Healthcare"},
+    {"ticker": "CCC", "score": 7, "coverage_pct": 60, "sector": "Technology"},
+    {"ticker": "DDD", "score": 6, "coverage_pct": 90, "sector": "Energy"},       # nota < 7
+    {"ticker": "EEE", "score": 9, "coverage_pct": 40, "sector": "Financials"},   # cobertura < 50
+    {"ticker": "FFF", "score": 10, "coverage_pct": 70, "sector": "Technology"},  # ya en cartera
+]
+ideas = scoring.select_ideas(CANDIDATES, held_tickers=["fff"], held_sectors={"Technology"})
+tickers_ideas = [i["ticker"] for i in ideas]
+check("excluye valores ya en cartera", "FFF" not in tickers_ideas, tickers_ideas)
+check("excluye nota por debajo de 7", "DDD" not in tickers_ideas, tickers_ideas)
+check("excluye cobertura por debajo de 50%", "EEE" not in tickers_ideas, tickers_ideas)
+check("ordena por nota desc, luego cobertura desc", tickers_ideas == ["AAA", "BBB", "CCC"], tickers_ideas)
+check("diversifica cuando el sector no esta ya en cartera",
+      next(i["diversifies"] for i in ideas if i["ticker"] == "BBB"), str(ideas))
+check("no diversifica cuando el sector ya esta en cartera",
+      not next(i["diversifies"] for i in ideas if i["ticker"] == "AAA"), str(ideas))
+check("sin posiciones no marca diversifica",
+      not any(i["diversifies"] for i in scoring.select_ideas([{"ticker": "BBB", "score": 8, "coverage_pct": 100, "sector": "Energy"}], [], set())))
+
+# ------------------------------------------------------------------- universo.json
+print("\n== recomendaciones: universo.json ==")
+
+with open(os.path.join(ROOT, "recursos", "universo.json"), encoding="utf-8") as fh:
+    universo = json.load(fh)
+
+stocks = universo.get("stocks", [])
+tickers_universo = [s["ticker"] for s in stocks]
+check("universo.json tiene al menos 90 tickers unicos",
+      len(set(tickers_universo)) >= 90, str(len(set(tickers_universo))))
+check("universo.json sin tickers duplicados",
+      len(tickers_universo) == len(set(tickers_universo)),
+      str([t for t in set(tickers_universo) if tickers_universo.count(t) > 1]))
+check("cada entrada trae nombre e indices",
+      all(s.get("name") and s.get("indices") for s in stocks),
+      str([s for s in stocks if not s.get("name") or not s.get("indices")][:3]))
+check("universo.json declara fuente y fecha", bool(universo.get("source")) and bool(universo.get("as_of")),
+      str({"source": universo.get("source"), "as_of": universo.get("as_of")}))
+
 shutil.rmtree(TEST_DIR, ignore_errors=True)
 
 print("\n" + ("TODO CORRECTO" if not failures else f"FALLOS CRITICOS: {failures}"))

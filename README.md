@@ -7,7 +7,7 @@ solo cartera, watchlist y una nota 1-10 de compra/venta ajustada a tu perfil inv
 ## Abrir la aplicacion
 
 Doble clic en **`SeaLock.bat`**. Se abre el navegador en http://127.0.0.1:8765 con
-tres pantallas: Cartera, Acciones y Ayuda.
+cuatro pantallas: Acciones, Recomendaciones, Cartera y Ayuda.
 
 Para cerrarla, `Ctrl+C` en la ventana negra que queda abierta.
 
@@ -21,8 +21,8 @@ Instalado y verificado. Python 3.12.10 puesto, y las dos baterias de pruebas en 
 incluidas las que salen a internet.
 
 ```bash
-python pruebas/prueba_humo.py    # ~30 checks: finance (9 tools) + market (11 tools) + scoring.py puro
-python pruebas/prueba_web.py     # ~23 checks: web API + defensas + B4 glosario
+python pruebas/prueba_humo.py    # ~50 checks: finance (9 tools) + market (11 tools) + scoring.py puro (incl. recomendaciones)
+python pruebas/prueba_web.py     # ~31 checks: web API + defensas + B4 glosario + recomendaciones
 ```
 
 Usan bases de datos temporales, asi que no tocan tus datos reales.

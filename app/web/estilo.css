@@ -530,3 +530,59 @@ button.peligro:hover { border-color: var(--rojo); color: var(--rojo); }
   font-size: 11px;
   font-style: italic;
 }
+
+/* Foco visible generico: cubre tambien filas/tarjetas de Recomendaciones,
+   alcanzables por teclado via tabindex. */
+button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+/* --- recomendaciones --- */
+.rec-fila { cursor: pointer; }
+.rec-fila:hover { background: var(--fondo-alt); }
+.rec-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--fondo-alt);
+  color: var(--texto-tenue);
+  margin: 0 4px 4px 0;
+}
+.rec-diversifica { background: color-mix(in srgb, var(--acento) 18%, transparent); color: var(--acento); }
+.rec-accion {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.rec-accion-sell, .rec-accion-review { background: color-mix(in srgb, var(--rojo) 16%, transparent); color: var(--rojo); }
+.rec-accion-no_add { background: color-mix(in srgb, var(--ambar) 18%, transparent); color: var(--ambar); }
+.rec-accion-add { background: color-mix(in srgb, var(--verde) 18%, transparent); color: var(--verde); }
+.rec-accion-hold { background: var(--fondo-alt); color: var(--texto-tenue); }
+
+.rec-tarjetas {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.rec-idea-tarjeta {
+  cursor: pointer;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 14px;
+  background: var(--fondo-alt);
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.rec-idea-tarjeta:hover { transform: translateY(-2px); box-shadow: var(--sombra-hover); }
+.rec-idea-cab { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.rec-pros { margin: 8px 0 0; padding-left: 16px; font-size: 12px; color: var(--texto-tenue); }
+.rec-pros li { margin-bottom: 2px; }
+
+.rec-visor-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
