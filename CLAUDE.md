@@ -52,6 +52,12 @@ SeaLock: 225 nodos, 886 aristas. Excluye `datos/`. Cache en `~/.cache/codebase-m
 - **Local primero.** `finance` sin internet. `market` solo GET a fuentes publicas, nunca envia datos del usuario.
 - **Sin dependencias.** Solo stdlib Python.
 - **Datos no salen.** No subir `datos/`, no incluir saldos en peticiones externas.
+  **Una excepcion, la unica: `app/llm.py`**, la caja "Preguntar a Claude" de la ficha.
+  Al pulsar el boton salen la pregunta y el contexto (precio, nota, pilares, trimestres,
+  fundamentales, titulares). Con las fronteras: solo al pulsar, **la posicion es opt-in**
+  (`include_position`), la clave vive en `ANTHROPIC_API_KEY` y se inyecta en el servidor
+  (nunca en la base de datos ni en el navegador) y la respuesta se pinta como texto, nunca
+  como HTML. Todo lo demas sigue sin salir.
 
 ## Convenciones
 

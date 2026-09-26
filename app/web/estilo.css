@@ -312,6 +312,17 @@ label.check {
 }
 label.check input { width: auto; margin: 0; }
 
+.respuesta-ask {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+  background: var(--fondo-alt);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 .revision {
   border: 1px solid var(--borde);
   border-left: 3px solid var(--acento);

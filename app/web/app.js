@@ -576,6 +576,26 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       ${renderQuarterly(d.quarterly)}
 
       <div class="caja">
+        <div class="cabecera-caja">
+          <h2>Preguntar a Claude</h2>
+          <a class="btn-ayuda" href="#" data-section="preguntar" title="Mas informacion">?</a>
+        </div>
+        <div class="tenue" style="font-size:12px;margin-bottom:10px">
+          Le pasa los numeros de esta ficha (precio, nota, pilares, trimestres) y puede
+          buscar en internet. <b>Es la unica parte de SeaLock que sale de tu equipo</b>:
+          solo al pulsar el boton.
+        </div>
+        <form id="form-ask" class="form-linea" style="flex-wrap:wrap">
+          <input name="question" placeholder="¿Esta cara ya? ¿Que mire en el proximo trimestre?"
+            style="flex:1;min-width:240px" maxlength="2000" required>
+          <label class="check"><input name="include_position" type="checkbox">Incluir mi posicion</label>
+          <label class="check"><input name="web_search" type="checkbox" checked>Buscar en internet</label>
+          <button type="submit" class="principal">Preguntar</button>
+        </form>
+        <div id="respuesta-ask"></div>
+      </div>
+
+      <div class="caja">
         <h2>Noticias</h2>
         ${Array.isArray(d.news) && d.news.length
           ? d.news.map((n) => `<div class="noticia">
@@ -597,6 +617,41 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       </div>`;
 
     cont.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
+
+    const formAsk = document.getElementById("form-ask");
+    formAsk.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const d = formData(ev.target);
+      const salida = document.getElementById("respuesta-ask");
+      const boton = formAsk.querySelector("button[type=submit]");
+      boton.disabled = true;
+      boton.textContent = "Pensando…";
+      salida.innerHTML = '<div class="cargando">Consultando…</div>';
+      try {
+        const r = await api("app", "ask", {
+          ticker,
+          question: d.question,
+          include_position: !!d.include_position,
+          web_search: d.web_search !== false,
+        });
+        // La respuesta viene de fuera: se pinta como texto, nunca como HTML.
+        salida.innerHTML = "";
+        const meta = document.createElement("div");
+        meta.className = "tenue";
+        meta.style.fontSize = "12px";
+        meta.textContent = `${r.model}${r.searched ? " · consultó internet" : ""}`
+          + (r.sent_position ? " · incluye tu posición" : " · sin tu posición");
+        const cuerpo = document.createElement("div");
+        cuerpo.className = "respuesta-ask";
+        cuerpo.textContent = r.answer;
+        salida.append(meta, cuerpo);
+      } catch (e) {
+        salida.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      } finally {
+        boton.disabled = false;
+        boton.textContent = "Preguntar";
+      }
+    });
 
     document.getElementById("form-dcf").addEventListener("submit", (ev) => {
       ev.preventDefault();
@@ -1177,6 +1232,24 @@ const HELP_CARD = {
       <p>Fuera de EE. UU. los datos llegan incompletos con frecuencia (Inditex y Banco
         Santander no publican flujo de caja trimestral). La cobertura de cada mercado se
         comprueba antes de fiarse de la tendencia.</p>`,
+  },
+  preguntar: {
+    titulo: "Preguntar a Claude",
+    contenido: `<p>Escribe una pregunta sobre el valor y la recibes con los datos de la ficha
+      como contexto: precio, nota, pilares, trimestres, fundamentales y noticias. Puede
+      buscar en internet para contrastar.</p>
+      <ul>
+        <li><b>Sale de tu equipo.</b> Es la unica parte de SeaLock que envia datos: la
+          pregunta y el contexto van a la API de Anthropic, y solo al pulsar el boton.</li>
+        <li><b>Tu posicion va aparte.</b> Solo se incluye si marcas la casilla; sin ella,
+          Claude no ve tu coste medio, tu peso ni tu P&amp;L.</li>
+        <li><b>La clave no sale del servidor.</b> Se lee de <code>ANTHROPIC_API_KEY</code>
+          en el entorno; no se guarda en la base de datos ni llega al navegador.</li>
+        <li><b>No es asesoramiento.</b> Es la lectura de un modelo sobre las mismas fuentes
+          publicas. La decision es tuya.</li>
+      </ul>
+      <p>Si no hay clave, la caja te lo dice y no envia nada. Puedes cambiar de modelo con
+        <code>SEALOCK_CLAUDE_MODEL</code>.</p>`,
   },
   recomendaciones: {
     titulo: "Recomendaciones",

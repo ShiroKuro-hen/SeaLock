@@ -285,6 +285,32 @@ try:
     code, r = call("/api/finance/trades_mark_uploaded", {"broker": "HapiBroker"})
     check("trades_mark_uploaded via API", code == 200 and r["data"]["marked"] >= 1, str(r)[:200])
 
+    # --- preguntar a Claude (HU-32) ---
+    code, r = call("/api/app/config", {})
+    cfg2 = r["data"]
+    check("config dice si hay clave de Claude y que modelo se usa",
+          "claude_available" in cfg2 and bool(cfg2.get("claude_model")), str(cfg2)[:200])
+
+    code, r = call("/api/app/ask", {"ticker": "AAPL", "question": ""})
+    check("pregunta vacia se rechaza sin llamar a la API", code == 400, str(r)[:200])
+
+    if not cfg2.get("claude_available"):
+        code, r = call("/api/app/ask", {"ticker": "AAPL", "question": "esta cara?"})
+        check("sin clave, ask explica que falta y no envia nada",
+              code == 400 and "ANTHROPIC_API_KEY" in json.dumps(r), str(r)[:200])
+    else:
+        code, r = call("/api/app/ask",
+                       {"ticker": "AAPL", "question": "esta cara? responde en una frase"})
+        check("ask responde con texto (red)", code == 200 and bool(r["data"].get("answer")),
+              str(r)[:200], critical=False)
+
+    code, _ = request("/api/app/ask", {"ticker": "AAPL", "question": "hola"})
+    check("ask rechaza llamada sin token", code == 403, f"codigo={code}")
+
+    code, html = request("/")
+    check("la clave de la API nunca llega al HTML",
+          "ANTHROPIC_API_KEY" not in html and "x-api-key" not in html, "")
+
     # --- exportacion (HU-28) ---
     code, r = call("/api/app/export_all", {})
     exp = r["data"] if code == 200 else {}

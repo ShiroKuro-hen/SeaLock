@@ -27,8 +27,10 @@ from urllib.parse import urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "mcp"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import finanzas_server as fin  # noqa: E402
+import llm  # noqa: E402
 import mercado_server as mer  # noqa: E402
 import scoring  # noqa: E402
 
@@ -487,6 +489,14 @@ def export_all():
     }
 
 
+def ask(ticker, question, include_position=False, web_search=True):
+    """One question to Claude, with this ticker's numbers as context. Network only here,
+    and only when the user presses the button: see app/llm.py for the privacy boundary."""
+    detail = stock_detail(ticker, latest_quarter_end=None)
+    return llm.ask(ticker, question, detail, include_position=include_position,
+                   web_search=web_search)
+
+
 def config():
     """App settings the UI needs at start, including what is still pending in the broker.
     SeaLock never sends anything to a broker: this is the list of what YOU have to copy."""
@@ -499,6 +509,8 @@ def config():
         "database_path": fin.DB_PATH,
         "brokers": list(fin.BROKERS),
         "pending_by_broker": {k: v["count"] for k, v in pending.items()},
+        "claude_available": llm.available(),
+        "claude_model": llm.MODEL,
     }
 
 
@@ -510,6 +522,7 @@ API["app"] = {
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
     "export_all": export_all,
+    "ask": ask,
     "config": config,
 }
 

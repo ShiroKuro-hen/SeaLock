@@ -3,7 +3,7 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-06, HU-07, HU-08, HU-09, HU-28 y HU-31. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
+HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31 y HU-32. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
 (Hidden Gems) siguen enteras.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
@@ -643,6 +643,27 @@ quiere sincronizar de verdad, es HU-27 y requiere decision expresa.
 ### [ ] HU-30 — Comparador de acciones (M)
 **Como** inversor, **quiero** comparar varias acciones lado a lado, **para** elegir entre ellas.
 - [ ] Tabla con fundamentales, pilares, trimestres (HU-01) y nota final (HU-08) de 2-4 tickers.
+
+### [x] HU-32 — Preguntar a Claude desde la ficha, con busqueda web (M)
+**Como** inversor, **quiero** preguntar sobre un valor desde la ficha, con los numeros de
+la app como contexto y buscando en internet, **para** contrastar sin salir de SeaLock.
+- [x] `app/llm.py`: `build_context()` (puro, sin red ni clave) arma el contexto desde la
+      respuesta de `stock_detail`; `ask()` llama a la API de mensajes de Anthropic.
+- [x] Busqueda web con la herramienta del servidor `web_search_20250305` (tope 3 por
+      pregunta). Sin credenciales de busquador.
+- [x] La posicion es **opt-in** por pregunta (`include_position`): sin la casilla no
+      viajan coste medio, valor ni P&L. Las noticias van marcadas como dato, no
+      instruccion.
+- [x] La clave solo se lee de `ANTHROPIC_API_KEY`; no se guarda ni llega al navegador
+      (test en `prueba_web.py`). Modelo con mando `SEALOCK_CLAUDE_MODEL`.
+- [x] La respuesta se pinta con `textContent`, nunca como HTML.
+- [x] Tests: 10 de contexto puro, 5 de formato de peticion/parseo con stub, 5 e2e.
+- [x] Aviso visible en la caja y cartilla de ayuda `preguntar`.
+
+Nota: rompe "Datos no salen" a proposito, y por eso queda escrito en § Principios como la
+unica excepcion. Con una *suscripcion* de Claude o ChatGPT **no** vale: hace falta una
+clave de API, que se cobra aparte. Ojo con el dato fiscal: no se envia nada
+automaticamente a Hapi ni a ningun broker (HU-27 sigue necesitando decision expresa).
 
 ---
 
