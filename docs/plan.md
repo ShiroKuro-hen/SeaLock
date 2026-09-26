@@ -2,9 +2,9 @@
 
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
-aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-01, HU-02, HU-03, HU-04,
-HU-06, HU-07, HU-08, HU-09 y HU-28; HU-00 esta implementada y probada pero **no** se marca
-hecha: le falta el commit propio. Epicas 1 y 3 cerradas.
+aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
+HU-04, HU-06, HU-07, HU-08, HU-09 y HU-28. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
+(Hidden Gems) siguen enteras.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -68,7 +68,7 @@ Tamano: S = < medio dia, M = 1-2 dias, L = 3+ dias.
 
 ## EPICA 0 — Preparacion
 
-### [ ] HU-00 — Arranque unico del servidor (S)
+### [x] HU-00 — Arranque unico del servidor (S)
 
 **Como** usuario, **quiero** que un segundo doble clic en `SeaLock.bat` abra la app
 ya en marcha, **para** no tener dos servidores peleando por el puerto.
@@ -85,8 +85,9 @@ Criterios de aceptacion:
       ejerce a mano, porque el test corre con `SEALOCK_NO_OPEN=1`.)*
 - [x] Dado que no hay ninguno en marcha, cuando lanzo SeaLock, entonces arranca normal.
       *(el propio arranque del servidor en `prueba_web.py` es el check).*
-- [ ] El cambio queda en un commit propio, separado de cualquier otra HU. **Pendiente:
-      por eso la HU sigue sin marcar.**
+- [x] El cambio queda en un commit propio, separado de cualquier otra HU.
+      *(commit `7453dbc`: solo `main()` en `app/servidor.py`, `SeaLock.bat` y su test;
+      aislado restaurando el fichero y reaplicando solo ese trozo.)*
 
 ---
 
