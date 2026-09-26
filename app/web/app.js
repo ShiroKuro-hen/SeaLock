@@ -575,6 +575,8 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
 
       ${renderQuarterly(d.quarterly)}
 
+      ${renderEstimates(d.estimates)}
+
       <div class="caja">
         <div class="cabecera-caja">
           <h2>Preguntar a Claude</h2>
@@ -683,8 +685,6 @@ function renderQuarterly(q) {
   const cur = quarters.find((x) => x.currency) || quarters[0] || {};
   const moneda = cur.currency || "";
 
-  const fila = (v, fmt) => (v === null || v === undefined ? "—" : fmt(v));
-
   let html = `<div class="caja">
     <div class="cabecera-caja">
       <h2>Resultados trimestrales</h2>
@@ -747,6 +747,55 @@ function barrasSVG(valores) {
   return `<svg width="${valores.length * (ancho + gap)}" height="${alto + 4}"
     viewBox="0 0 ${valores.length * (ancho + gap)} ${alto + 4}" role="img"
     aria-label="Ventas por trimestre: ${esc(texto)}">${svg}</svg>`;
+}
+
+/** Celda de tabla: "—" cuando no hay dato, con el formato que le pase el que llama. */
+function fila(v, fmt = (x) => x) {
+  return v === null || v === undefined ? "—" : fmt(v);
+}
+
+/** Caja "Proyecciones": el consenso de analistas hacia delante. Es una prevision, no un
+ *  hecho, y la nota solo usa el balance de revisiones, con poco peso. */
+function renderEstimates(e) {
+  const periods = (e && e.periods) || [];
+  if (!periods.length) {
+    return `<div class="caja"><div class="cabecera-caja"><h2>Proyecciones</h2>
+      <a class="btn-ayuda" href="#" data-section="proyecciones" title="Mas informacion">?</a></div>
+      <div class="vacio">Sin proyecciones publicas para este valor.</div></div>`;
+  }
+  const t = e.target || {};
+  const revisionPositiva = (e.revisions_net_30d || 0) > 0;
+  return `<div class="caja">
+    <div class="cabecera-caja">
+      <h2>Proyecciones</h2>
+      <a class="btn-ayuda" href="#" data-section="proyecciones" title="Mas informacion">?</a>
+    </div>
+    <div class="tenue" style="font-size:12px;margin-bottom:10px">
+      Consenso de analistas${t.analysts ? ` (${t.analysts})` : ""}, no un hecho.
+      La nota solo usa el balance de revisiones, y con poco peso.</div>
+    <div class="tabla-scroll"><table>
+      <thead><tr><th>Periodo</th><th>Cierre</th><th class="num">BPA estimado</th>
+        <th class="num">Analistas</th><th class="num">Ventas estimadas</th>
+        <th class="num">Crecimiento esperado</th></tr></thead>
+      <tbody>${periods.map((p) => `<tr>
+        <td>${esc(p.period_es || p.period)}</td>
+        <td class="tenue">${esc(fila(p.end_date))}</td>
+        <td class="num">${fila(p.eps, (v) => number(v, 2))}</td>
+        <td class="num">${fila(p.analysts, (v) => number(v, 0))}</td>
+        <td class="num">${fila(p.revenue, (v) => compact(v))}</td>
+        <td class="num ${sign(p.revenue_growth_pct)}">${fila(p.revenue_growth_pct, (v) => pct(v))}</td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="metricas" style="margin-top:12px">
+      <div class="metrica"><div class="k">Revisiones 30 d</div>
+        <div class="v ${revisionPositiva ? "verde" : (e.revisions_net_30d || 0) < 0 ? "rojo" : ""}">
+          ${number(e.revisions_up_30d, 0)} arriba / ${number(e.revisions_down_30d, 0)} abajo</div></div>
+      <div class="metrica" data-glosario="Objetivo de analistas"><div class="k">Objetivo medio</div>
+        <div class="v">${fila(t.mean, (v) => number(v, 2))}</div></div>
+      <div class="metrica"><div class="k">Rango</div>
+        <div class="v">${fila(t.low, (v) => number(v, 2))} – ${fila(t.high, (v) => number(v, 2))}</div></div>
+    </div>
+    ${t.recommendation ? `<div class="tenue" style="font-size:12px;margin-top:8px">Consenso: ${esc(t.recommendation)}.</div>` : ""}
+  </div>`;
 }
 
 /** La nota que se ve es la final (mecanica + ajuste de Claude). Sin decimales si no hay
@@ -1232,6 +1281,25 @@ const HELP_CARD = {
       <p>Fuera de EE. UU. los datos llegan incompletos con frecuencia (Inditex y Banco
         Santander no publican flujo de caja trimestral). La cobertura de cada mercado se
         comprueba antes de fiarse de la tendencia.</p>`,
+  },
+  proyecciones: {
+    titulo: "Proyecciones",
+    contenido: `<p>Lo que espera el <b>consenso de analistas</b>: BPA y ventas del trimestre
+      y del año que vienen, cuantos analistas lo cubren y cuanto crecimiento espera el mercado.
+      Es una <b>prevision, no un dato de la empresa</b>.</p>
+      <ul>
+        <li><b>Revisiones 30 d</b> - cuantos analistas han subido o bajado su estimacion en
+          el ultimo mes. Es lo unico que entra en la nota, y con poco peso.</li>
+        <li><b>Por que no mas?</b> El consenso de Wall Street tiende al optimismo, asi que
+          su <i>nivel</i> se enseña pero no puntua: mediria el optimismo del analysta, no
+          el negocio.</li>
+        <li><b>Objetivo de analistas</b> - precio medio y rango. Tambien con medio peso,
+          y con la misma prudencia.</li>
+        <li><b>Poca cobertura</b> - 5 analistas no es consenso, es opinion. Con menos de 3
+          la cifra se lee como orientativa.</li>
+      </ul>
+      <p>Las proyecciones salen de Yahoo. Para las europeas llegan con retraso y a veces no
+        hay cobertura: la caja avisa en vez de inventar.</p>`,
   },
   preguntar: {
     titulo: "Preguntar a Claude",

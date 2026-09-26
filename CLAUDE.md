@@ -141,7 +141,7 @@ Pesos base por tolerancia al riesgo en `BASE_WEIGHTS`; ajustados por `preference
 datos se excluye y su peso se redistribuye; `coverage_pct` < 50% dispara un aviso.
 Cuatro senales de alerta (`red_flags`) limitan la nota a 3: payout >90% con caja libre
 negativa; deuda/patrimonio >2x con beneficio cayendo; precio bajo su media de 200
-sesiones con ventas y beneficio cayendo a la vez; ventas_DOWN韧 bajando interanualmente en
+sesiones con ventas y beneficio cayendo a la vez; ventas cayendo interanualmente en
 los 3 trimestres con el margen neto a la baja.
 
 Fuentes de los criterios: Buffett (ROE, poca deuda), Graham (criterios defensivos,
@@ -150,6 +150,15 @@ EV/EBITDA), Piotroski (senales de rentabilidad y apalancamiento), AQR
 quality-minus-junk (margenes, ROA), momentum de Jegadeesh-Titman. El consenso de
 analistas entra solo como desempate debil en valoracion (medio peso): el sesgo
 optimista del sell-side esta documentado, por eso nunca decide por si solo.
+
+`earnings_estimates()` (`mcp/mercado_server.py`) da las proyecciones hacia delante del
+consenso: BPA y ventas del trimestre y del ano que vienen, cuantos analistas cubren y
+cuantos han subido o bajado su estimacion en 30 dias. Se cachea en `_raw_inputs` como
+`estimates` y la ficha la muestra entera, pero **de las proyecciones solo puntua el
+balance de revisiones** (peso 0.5, `_lin(-8, +8)`, sobre los dos trimestres mas
+cercanos). Los *niveles* del BPA esperado no entran en la nota a proposito: medirian el
+optimismo del analysta, no el negocio. Una caja sin cobertura dice que no hay
+proyecciones, no rellena.
 
 ## Fuentes de datos
 
@@ -161,6 +170,7 @@ optimista del sell-side esta documentado, por eso nunca decide por si solo.
 | Fundamentales Europa | Yahoo quoteSummary v10 | **Parcial** |
 | Noticias | Yahoo RSS + Google News RSS | Alta |
 | Trimestres fiscales | Yahoo fundamentals-timeseries v1 | Alta EE.UU., **Parcial** Europa |
+| Proyecciones (consenso) | Yahoo quoteSummary earningsTrend | Media: es prevision, no dato |
 | Valoracion | Calculo local | Sin red |
 
 Verificado agosto 2026:

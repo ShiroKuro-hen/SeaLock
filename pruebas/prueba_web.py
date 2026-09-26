@@ -176,6 +176,17 @@ try:
     check("la nota expone quarters_available y su aviso",
           "quarters_available" in f["score"], str(f["score"].get("quarters_available")))
 
+    est = f.get("estimates") or {}
+    check("la ficha trae las proyecciones de analistas (red)",
+          "error" not in est and bool(est.get("periods")), str(est)[:200], critical=False)
+    if est.get("periods"):
+        p0 = est["periods"][0]
+        check("cada proyeccion trae periodo, BPA, analistas, ventas y crecimiento",
+              all(k in p0 for k in ("period_es", "eps", "analysts", "revenue",
+                                    "revenue_growth_pct")), str(p0)[:200])
+        check("el precio objetivo llega con su rango",
+              "mean" in (est.get("target") or {}), str(est.get("target"))[:150])
+
     # --- actualizar nota a demanda (HU-06) ---
     check("la ficha dice cuantos datos tiene la nota",
           isinstance(f.get("score_age_seconds"), int) and f["score_age_seconds"] >= 0,

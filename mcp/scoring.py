@@ -107,7 +107,7 @@ def _quality(f):
     return _combine(pairs), details
 
 
-def _valuation(f, dcf, graham, price):
+def _valuation(f, dcf, graham, price, estimates=None):
     val = (f or {}).get("valuation") or {}
     details, pairs = [], []
 
@@ -150,6 +150,17 @@ def _valuation(f, dcf, graham, price):
         tpct = round(100 * (target - price) / price, 2)
         s = _lin(tpct, -20, 20)
         pairs.append((s, 0.5)); details.append(_detail("analyst_target", "Objetivo analistas vs. precio", tpct, s, "%"))
+
+    # Only the revision balance, never the consensus level: how many analysts moved
+    # their estimate up or down in 30 days is sentiment, and it carries much less of the
+    # documented sell-side optimism than the absolute forecast does. Weight 0.5, same as
+    # the target price, so it can never decide the note on its own.
+    revisions = (estimates or {}).get("revisions_net_30d")
+    if revisions is not None:
+        s = _lin(revisions, -8, 8)
+        pairs.append((s, 0.5))
+        details.append(_detail("estimate_revisions", "Balance de revisiones (30 d)", revisions, s,
+                                "", fmt="{:+d}"))
 
     return _combine(pairs), details
 
@@ -367,7 +378,7 @@ def _label_for(score, holding=False):
 
 
 def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=None,
-                holding=None, quarterly=None):
+                holding=None, quarterly=None, estimates=None):
     profile = profile or {}
     risk_tolerance = profile.get("risk_tolerance", "moderate")
     horizon = profile.get("horizon", "long")
@@ -379,7 +390,7 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
 
     pillar_results = {
         "quality": _quality(f),
-        "valuation": _valuation(f, dcf, graham, price),
+        "valuation": _valuation(f, dcf, graham, price, estimates),
         "health": _health(f),
         "growth": _growth(f),
         "momentum": _momentum(historical, price),

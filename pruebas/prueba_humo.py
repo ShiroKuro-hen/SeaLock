@@ -424,6 +424,22 @@ try:
         str(qbad)[:150],
         critical=False,
     )
+
+    est = json.loads(text(c.request("tools/call", {
+        "name": "earnings_estimates", "arguments": {"ticker": "AAPL"}})))
+    check(
+        "earnings_estimates AAPL: 4 periodos con BPA y analistas (red)",
+        "error" not in est and len(est.get("periods", [])) >= 3
+        and all(p.get("eps") is not None for p in est["periods"][:3]),
+        str(est)[:250],
+        critical=False,
+    )
+    check(
+        "earnings_estimates trae el precio objetivo y el numero de analistas",
+        (est.get("target") or {}).get("mean") is not None,
+        str(est.get("target"))[:150],
+        critical=False,
+    )
 finally:
     c.close()
 
@@ -812,6 +828,90 @@ check("con 1 solo trimestre y sin interanual no queda nada puntuable",
 
 check("score_stock sigue siendo pura: results no aparece sin quarterly",
       next(p for p in scoring.score_stock({}, {}, {})["pillars"] if p["key"] == "results")["subscore"] is None)
+
+# ---------------------------------------------- proyecciones de analistas (HU-33)
+print("\n== proyecciones: parse_estimates ==")
+
+TREND_PAYLOAD = {"quoteSummary": {"result": [{
+    "earningsTrend": {"trend": [
+        {"period": "0q", "endDate": "2026-09-30",
+         "earningsEstimate": {"avg": {"raw": 1.98}, "low": {"raw": 1.9}, "high": {"raw": 2.1},
+                              "numberOfAnalysts": {"raw": 27}},
+         "revenueEstimate": {"avg": {"raw": 113624521680}, "growth": {"raw": 0.1089}},
+         "epsRevisions": {"upLast30days": {"raw": 7}, "downLast30days": {"raw": 14}}},
+        {"period": "+1q", "endDate": "2026-12-31",
+         "earningsEstimate": {"avg": {"raw": 2.90}, "numberOfAnalysts": {"raw": 21}},
+         "revenueEstimate": {"avg": {"raw": 154392842060}, "growth": {"raw": 0.074}},
+         "epsRevisions": {"upLast30days": {"raw": 1}, "downLast30days": {"raw": 1}}},
+        {"period": "0y", "endDate": "2026-09-30",
+         "earningsEstimate": {"avg": {"raw": 8.82}, "numberOfAnalysts": {"raw": 39}},
+         "revenueEstimate": {"avg": {"raw": 477832817030}, "growth": {"raw": 0.148}}},
+        {"period": "+1y", "endDate": "2027-09-30",
+         "earningsEstimate": {"avg": {"raw": 9.58}, "numberOfAnalysts": {"raw": 40}},
+         "revenueEstimate": {"avg": {"raw": 527946029390}, "growth": {"raw": 0.105}}},
+    ]},
+    "financialData": {"targetMeanPrice": {"raw": 328.22}, "targetHighPrice": {"raw": 405.0},
+                      "targetLowPrice": {"raw": 215.0}, "numberOfAnalystOpinions": {"raw": 39},
+                      "recommendationKey": "buy"},
+}]}}
+
+e = mer.parse_estimates(TREND_PAYLOAD)
+check("parse_estimates devuelve los 4 periodos con etiqueta en espanol",
+      len(e["periods"]) == 4 and e["periods"][0]["period_es"] == "Trimestre actual",
+      str([p["period_es"] for p in e["periods"]]))
+check("parse_estimates pasa el BPA y el numero de analistas",
+      e["periods"][0]["eps"] == 1.98 and e["periods"][0]["analysts"] == 27
+      and e["periods"][0]["eps_low"] == 1.9, str(e["periods"][0]))
+check("parse_estimates convierte el crecimiento a porcentaje",
+      e["periods"][0]["revenue_growth_pct"] == 10.89, str(e["periods"][0]["revenue_growth_pct"]))
+check("el balance de revisiones sale de los dos trimestres mas cercanos, no de los cuatro",
+      e["revisions_up_30d"] == 8 and e["revisions_down_30d"] == 15
+      and e["revisions_net_30d"] == -7, str(e["revisions_net_30d"]))
+check("parse_estimates trae el precio objetivo con su rango",
+      e["target"]["mean"] == 328.22 and e["target"]["low"] == 215.0
+      and e["target"]["analysts"] == 39, str(e["target"]))
+check("sin trend devuelve None en vez de inventar",
+      mer.parse_estimates({"quoteSummary": {"result": [{}]}}) is None)
+check("sin result devuelve None", mer.parse_estimates({}) is None)
+check("las proyecciones avisan de que son consenso, no hechos",
+      "sesgo" in e["note_es"], e["note_es"])
+
+# El nivel del BPA estimado NO puntua: solo la revision, y con poco peso.
+# Valoracion a media escala (PER 25, PEG 1.5) para que se note el efecto de las revisiones.
+MEDIA = {
+    "valuation": {"per_trailing": 25, "peg": 1.5},
+    "financial_strength": {"debt_to_equity": 60},
+    "dividend": {},
+}
+sin_est = scoring.score_stock({"price": 100}, MEDIA, HEALTHY["historical"])
+con_est = scoring.score_stock({"price": 100}, MEDIA, HEALTHY["historical"],
+                              estimates={"revisions_net_30d": 8, "periods": [
+                                  {"eps": 99.0, "analysts": 40, "revenue": 5e11}]})
+con_est_barato = scoring.score_stock({"price": 100}, MEDIA, HEALTHY["historical"],
+                                     estimates={"revisions_net_30d": 8, "periods": [
+                                         {"eps": 0.01, "analysts": 2, "revenue": 1e6}]})
+val_base = next(p for p in sin_est["pillars"] if p["key"] == "valuation")
+val_up = next(p for p in con_est["pillars"] if p["key"] == "valuation")
+val_down = next(p for p in scoring.score_stock(
+    {"price": 100}, MEDIA, HEALTHY["historical"],
+    estimates={"revisions_net_30d": -8}).get("pillars") if p["key"] == "valuation")
+
+check("el BPA estimado no puntua: mismo nivel de revisiones, nota igual",
+      con_est["score"] == con_est_barato["score"] == sin_est["score"] + 1,
+      f"{sin_est['score']} / {con_est['score']} / {con_est_barato['score']}")
+check("sin estimaciones no aparece la metrica de revisiones",
+      not any(d["metric"] == "estimate_revisions" for d in val_base["details"]),
+      str([d["metric"] for d in val_base["details"]]))
+check("revisiones al alza suben el pilar de valoracion y salen en sus detalles",
+      val_up["subscore"] > val_base["subscore"]
+      and any(d["metric"] == "estimate_revisions" for d in val_up["details"]),
+      f"{val_base['subscore']} -> {val_up['subscore']}")
+check("revisiones a la baja bajan el pilar de valoracion",
+      val_down["subscore"] < val_base["subscore"], str(val_down["subscore"]))
+check("el peso de las revisiones es debil: 15 puntos debia y la nota solo se mueve 1",
+      val_up["subscore"] - val_base["subscore"] < 0.5
+      and abs(sum(con_est["weights"].values()) - 100) < 0.5,
+      f"subnota {val_base['subscore']} -> {val_up['subscore']}")
 
 # ------------------------------------------- aviso de trimestres (HU-03)
 print("\n== aviso de trimestres incompletos ==")

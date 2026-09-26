@@ -3,7 +3,7 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31 y HU-32. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
+HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32 y HU-33. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
 (Hidden Gems) siguen enteras.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
@@ -639,6 +639,26 @@ falta por copiar a la plataforma, **para** no buscar una operacion donde no esta
 Nota: pedida fuera del plan. **SeaLock no manda nada a Hapi ni a ninguna plataforma**
 (§ Principios): `uploaded_at` es lo que tu marcas a mano, no un envio. Si algun dia se
 quiere sincronizar de verdad, es HU-27 y requiere decision expresa.
+
+### [x] HU-33 — Proyecciones de analistas (M)
+**Como** inversor, **quiero** ver lo que espera el consenso de analistas para los proximos
+periodos, **para** contrastar mi lectura con la del mercado.
+- [x] Tool `earnings_estimates(ticker)` con los 4 periodos (trimestre actual, siguiente,
+      ano actual, siguiente): BPA, numero de analistas, ventas y crecimiento esperado,
+      mas el precio objetivo con su rango.
+- [x] `parse_estimates()` es pura: el shape de Yahoo se testea sin red.
+- [x] Cache 6 h en `_raw_inputs` como `estimates`; llega a la ficha y a la nota.
+- [x] Caja "Proyecciones" en la ficha con la tabla, el balance de revisiones 30 d y el
+      rango del objetivo, mas cartilla de ayuda y entrada de glosario.
+- [x] De las proyecciones **solo puntua el balance de revisiones** (peso 0.5, sobre los dos
+      trimestres mas cercanos). Los niveles del BPA esperado no entran: medirian el
+      optimismo del analysta, no el negocio.
+- [x] Tests: 10 puros (parseo, y que el nivel no mueva la nota) + 2 de red + 3 e2e.
+
+Nota: el sesgo al alza del sell-side ya estaba documentado para el precio objetivo; aqui
+se aplica el mismo criterio al resto del consenso. Con menos de 3 analistas la cobertura
+es tan baja que la cifra se lee como orientativa: se muestra, pero el balance de
+revisiones de un solo analista no dice mucho.
 
 ### [ ] HU-30 — Comparador de acciones (M)
 **Como** inversor, **quiero** comparar varias acciones lado a lado, **para** elegir entre ellas.

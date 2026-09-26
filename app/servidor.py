@@ -242,7 +242,7 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
     # forces a refetch at most once a minute. News and the DCF, which follow the
     # assumptions or are cheap, stay per call.
     raw = _raw_inputs(ticker, refresh=refresh)
-    for key in ("quote", "fundamentals", "historical", "quarterly"):
+    for key in ("quote", "fundamentals", "historical", "quarterly", "estimates"):
         section = raw.get(key)
         if key == "quote" and not section and raw.get("quote_error"):
             section = {"error": raw["quote_error"]}
@@ -276,7 +276,7 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
     output["score"] = _with_review(output["ticker"], scoring.score_stock(
         clean("quote") or {}, clean("fundamentals") or {}, clean("historical") or {},
         dcf=clean("dcf"), graham=clean("graham"), profile=fin.profile_get(), holding=holding,
-        quarterly=clean("quarterly") or {},
+        quarterly=clean("quarterly") or {}, estimates=clean("estimates") or {},
     ), latest_quarter_end or (quarters[0].get("period_end") if quarters else None))
     return output
 
@@ -314,6 +314,10 @@ def _fetch_raw(ticker):
         raw["quarterly"] = mer.quarterly(ticker=ticker)
     except Exception:  # noqa: BLE001 - recent results, just skipped
         raw["quarterly"] = {}
+    try:
+        raw["estimates"] = mer.earnings_estimates(ticker=ticker)
+    except Exception:  # noqa: BLE001 - analyst projections, just skipped
+        raw["estimates"] = {}
     return raw
 
 
@@ -365,7 +369,7 @@ def _score_ticker(ticker, profile, holding=None):
     result = scoring.score_stock(
         raw.get("quote") or {}, fundamentals, raw.get("historical") or {},
         dcf=raw.get("dcf"), graham=raw.get("graham"), profile=profile, holding=holding,
-        quarterly=raw.get("quarterly") or {},
+        quarterly=raw.get("quarterly") or {}, estimates=raw.get("estimates") or {},
     )
     result["ticker"] = ticker
     result["sector"] = fundamentals.get("sector") if ok_fundamentals else None

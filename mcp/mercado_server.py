@@ -1030,6 +1030,102 @@ def quarterly(ticker):
     return result
 
 
+# ------------------------------------------------------------------ estimates
+
+ESTIMATE_PERIODS_ES = {
+    "0q": "Trimestre actual",
+    "+1q": "Proximo trimestre",
+    "0y": "Ano actual",
+    "+1y": "Ano siguiente",
+}
+
+
+def parse_estimates(payload):
+    """Pure: quoteSummary earningsTrend + financialData -> analyst projections.
+
+    This is the sell-side consensus (BPA and revenue expected for the next periods,
+    how many analysts, and how many of them moved their estimate up or down). Levels are
+    kept out of the score on purpose: consensus skews optimistic. What the score uses is
+    the *revision balance*, which is sentiment and not a level.
+    """
+    result = (payload.get("quoteSummary") or {}).get("result") or []
+    if not result:
+        return None
+    block = result[0]
+    trend = (block.get("earningsTrend") or {}).get("trend") or []
+    periods = []
+    for row in trend:
+        eps = row.get("earningsEstimate") or {}
+        rev = row.get("revenueEstimate") or {}
+        up30, down30 = row.get("epsRevisions") or {}, {}
+        down30 = up30.get("downLast30days")
+        up30 = up30.get("upLast30days")
+        periods.append({
+            "period": row.get("period"),
+            "period_es": ESTIMATE_PERIODS_ES.get(row.get("period"), row.get("period")),
+            "end_date": row.get("endDate"),
+            "eps": _num(eps.get("avg")),
+            "eps_low": _num(eps.get("low")),
+            "eps_high": _num(eps.get("high")),
+            "analysts": _num(eps.get("numberOfAnalysts")),
+            "revenue": _num(rev.get("avg")),
+            "revenue_growth_pct": round(_num(rev.get("growth")) * 100, 2)
+            if _num(rev.get("growth")) is not None else None,
+            "revisions_up_30d": _num(up30),
+            "revisions_down_30d": _num(down30),
+        })
+    if not periods:
+        return None
+
+    fd = block.get("financialData") or {}
+    # Revision balance over the two nearest quarters: a level, not a price, so the
+    # documented optimism bias of the consensus hits it much less.
+    near = [p for p in periods if p["period"] in ("0q", "+1q")][:2] or periods[:2]
+    net = sum((p["revisions_up_30d"] or 0) - (p["revisions_down_30d"] or 0) for p in near)
+    return {
+        "periods": periods,
+        "revisions_net_30d": net,
+        "revisions_up_30d": sum(p["revisions_up_30d"] or 0 for p in near),
+        "revisions_down_30d": sum(p["revisions_down_30d"] or 0 for p in near),
+        "target": {
+            "mean": _num(fd.get("targetMeanPrice")),
+            "high": _num(fd.get("targetHighPrice")),
+            "low": _num(fd.get("targetLowPrice")),
+            "analysts": _num(fd.get("numberOfAnalystOpinions")),
+            "recommendation": fd.get("recommendationKey"),
+        },
+        "note_es": (
+            "Consenso de analistas, no un hecho: el sesgo del sell-side esta documentado, "
+            "por eso solo la revision de estimaciones entra en la nota y con poco peso."
+        ),
+    }
+
+
+@srv.tool(
+    "earnings_estimates",
+    "Analyst projections: consensus EPS and revenue for the current and next quarter and "
+    "year, how many analysts, and how many moved their estimate up or down in 30 days. "
+    "Forecasts, not facts.",
+    {"ticker": {"type": "string"}},
+    required=["ticker"],
+)
+def earnings_estimates(ticker):
+    ticker = ticker.upper().strip()
+    crumb = _crumb()
+    url = (f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(ticker)}"
+           "?modules=earningsTrend,financialData")
+    if crumb:
+        url += f"&crumb={urllib.parse.quote(crumb)}"
+    try:
+        payload = _get_json(url)
+    except Exception as exc:  # noqa: BLE001 - a missing projection is not fatal
+        return {"ticker": ticker, "error": str(exc)}
+    estimates = parse_estimates(payload)
+    if estimates is None:
+        return {"ticker": ticker, "error": "Sin proyecciones publicas para este valor"}
+    return {"ticker": ticker, **estimates}
+
+
 # ------------------------------------------------------------------- valuation
 
 
@@ -1336,12 +1432,16 @@ def stock_score(ticker, risk_tolerance=None, horizon=None, preference=None):
         recent = quarterly(ticker)
     except Exception:  # noqa: BLE001 - results pillar just skips
         recent = {}
+    try:
+        estimates = earnings_estimates(ticker)
+    except Exception:  # noqa: BLE001 - projections just skip
+        estimates = {}
 
     profile = {k: v for k, v in {
         "risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference,
     }.items() if v}
     return scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile or None,
-                               quarterly=recent)
+                               quarterly=recent, estimates=estimates)
 
 
 if __name__ == "__main__":
