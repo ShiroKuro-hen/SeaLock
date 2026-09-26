@@ -1112,6 +1112,185 @@ check("select_ideas ordena y filtra por la nota final, no por la mecanica",
           [{"ticker": "CCC", "score": 9, "final_score": 6.9, "coverage_pct": 90}], [], set())),
       str(ordered))
 
+# ------------------------------------------------------------ hidden gems (HU-13)
+print("\n== Hidden Gems: select_gems (HU-13, puro) ==")
+
+
+def _gem_pillars(valuation=0.5, quality=0.2):
+    return [
+        {"key": "quality", "name_es": "Calidad", "weight": 25, "subscore": quality, "details": []},
+        {"key": "valuation", "name_es": "Valoracion", "weight": 25, "subscore": valuation, "details": []},
+    ]
+
+
+def _gem_candidate(ticker, final_score=8, coverage=80, red_flags=None, quarters=3,
+                   mcap=1_000_000_000, valuation=0.5, quality=0.2, analysts=5, sector="Tech"):
+    return {
+        "ticker": ticker, "final_score": final_score, "coverage_pct": coverage, "sector": sector,
+        "red_flags": red_flags or [], "quarters_available": quarters, "market_cap_eur": mcap,
+        "num_analysts": analysts, "pillars": _gem_pillars(valuation, quality),
+    }
+
+
+gems = scoring.select_gems([
+    _gem_candidate("GOOD"),
+    _gem_candidate("REDFLAG", red_flags=["algo mal"]),
+    _gem_candidate("FEWQ", quarters=1),
+    _gem_candidate("NOQ", quarters=None),
+    _gem_candidate("NOMCAP", mcap=None),
+    _gem_candidate("TINY", mcap=100_000_000),
+    _gem_candidate("HUGE", mcap=20_000_000_000),
+    _gem_candidate("PRICEY", valuation=-0.1),
+], held_tickers=[], held_sectors=set())
+gem_tickers = [g["ticker"] for g in gems]
+check("select_gems acepta un candidato que cumple todos los criterios", "GOOD" in gem_tickers, gem_tickers)
+check("select_gems excluye con red_flags activas", "REDFLAG" not in gem_tickers, gem_tickers)
+check("select_gems excluye con menos de 2 trimestres disponibles", "FEWQ" not in gem_tickers, gem_tickers)
+check("select_gems excluye sin dato de trimestres", "NOQ" not in gem_tickers, gem_tickers)
+check("select_gems excluye sin capitalizacion (sin dato -> fuera)", "NOMCAP" not in gem_tickers, gem_tickers)
+check("select_gems excluye capitalizacion por debajo de 300 M€", "TINY" not in gem_tickers, gem_tickers)
+check("select_gems excluye capitalizacion por encima de 10.000 M€", "HUGE" not in gem_tickers, gem_tickers)
+check("select_gems excluye Valoracion <= 0 (esta cara)", "PRICEY" not in gem_tickers, gem_tickers)
+
+ordered_gems = scoring.select_gems([
+    _gem_candidate("A", final_score=9, valuation=0.5, analysts=10),
+    _gem_candidate("B", final_score=9, valuation=0.8, analysts=2),
+    _gem_candidate("D", final_score=9, valuation=0.8, analysts=None),
+    _gem_candidate("C", final_score=7, valuation=0.9, analysts=1),
+], [], set())
+check("select_gems ordena por nota final, luego Valoracion, luego menos analistas (sin dato al final)",
+      [g["ticker"] for g in ordered_gems] == ["B", "D", "A", "C"],
+      [g["ticker"] for g in ordered_gems])
+
+reason = scoring.select_gems([_gem_candidate("R1", valuation=0.9, quality=0.1)], [], set())[0]
+check("select_gems anota el motivo principal (pilar con mejor subnota ponderada)",
+      reason["main_reason_es"] == "Valoracion", reason.get("main_reason_es"))
+reason2 = scoring.select_gems([_gem_candidate("R2", valuation=0.1, quality=0.9)], [], set())[0]
+check("select_gems cambia el motivo principal si otro pilar pesa mas",
+      reason2["main_reason_es"] == "Calidad", reason2.get("main_reason_es"))
+
+# --------------------------------------------------- hidden gems: cache (HU-12, sin red)
+print("\n== Hidden Gems: recompute_from_payload y cache (HU-12) ==")
+
+_GEM_PAYLOAD = {
+    "name": "Fake Co",
+    "pillars": [
+        {"key": "quality", "name_es": "Calidad", "subscore": 0.6, "details": []},
+        {"key": "valuation", "name_es": "Valoracion", "subscore": 0.4, "details": []},
+        {"key": "health", "name_es": "Solidez financiera", "subscore": 0.5, "details": []},
+        {"key": "growth", "name_es": "Crecimiento", "subscore": 0.3, "details": []},
+        {"key": "momentum", "name_es": "Momentum", "subscore": 0.2, "details": []},
+        {"key": "results", "name_es": "Resultados recientes", "subscore": 0.5, "details": []},
+        {"key": "dividend", "name_es": "Dividendo", "subscore": None, "details": []},
+    ],
+    "dividend_variants": {
+        "dividend": {"subscore": 0.9, "details": []},
+        "other": {"subscore": -0.5, "details": []},
+    },
+    "red_flags": [], "quarters_available": 3, "quarters_note_es": None,
+}
+_MODERATE = {"risk_tolerance": "moderate", "horizon": "long", "preference": "balanced"}
+_DIVIDEND_PREF = {"risk_tolerance": "moderate", "horizon": "long", "preference": "dividend"}
+_AGGRESSIVE = {"risk_tolerance": "aggressive", "horizon": "long", "preference": "balanced"}
+
+r_moderate = scoring.recompute_from_payload(_GEM_PAYLOAD, _MODERATE)
+r_dividend = scoring.recompute_from_payload(_GEM_PAYLOAD, _DIVIDEND_PREF)
+r_aggressive = scoring.recompute_from_payload(_GEM_PAYLOAD, _AGGRESSIVE)
+check("recompute_from_payload cambia de nota al preferir dividendo (variante de dividendo distinta, sin red)",
+      r_moderate["score"] != r_dividend["score"], (r_moderate["score"], r_dividend["score"]))
+check("recompute_from_payload usa pesos distintos por tolerancia al riesgo, sin red",
+      r_moderate["weights"] != r_aggressive["weights"], (r_moderate["weights"], r_aggressive["weights"]))
+check("recompute_from_payload conserva los red_flags guardados",
+      scoring.recompute_from_payload({**_GEM_PAYLOAD, "red_flags": ["riesgo"]}, _MODERATE)["score"] <= 3,
+      "")
+
+# score_cache: freshness 14 dias (gems_list) y 7 dias (rotacion de escaneo). Usa una DB
+# temporal propia (monkeypatch de finsrv.DATA_DIR/DB_PATH): nunca toca datos/finanzas.db,
+# y no reutiliza TEST_DIR (los servidores de arriba ya cerraron sus procesos, pero mejor
+# no compartir directorio con ellos).
+import datetime as _dt  # noqa: E402
+
+_GEM_DB_DIR = tempfile.mkdtemp(prefix="sealock-gems-")
+finsrv.DATA_DIR = _GEM_DB_DIR
+finsrv.DB_PATH = os.path.join(_GEM_DB_DIR, "finanzas_gemas.db")
+
+_fresh_at = (_dt.date.today() - _dt.timedelta(days=5)).isoformat() + "T00:00:00"
+_stale_at = (_dt.date.today() - _dt.timedelta(days=20)).isoformat() + "T00:00:00"
+finsrv.score_cache_upsert(
+    ticker="FRESHCO", scored_at=_fresh_at, score=8, coverage_pct=80, red_flags=[],
+    market_cap_eur=1_000_000_000, num_analysts=5, sector="Tech", country="US",
+    region="Norteamerica", quarters_available=3, payload=_GEM_PAYLOAD)
+finsrv.score_cache_upsert(
+    ticker="STALECO", scored_at=_stale_at, score=8, coverage_pct=80, red_flags=[],
+    market_cap_eur=1_000_000_000, num_analysts=5, sector="Tech", country="US",
+    region="Norteamerica", quarters_available=3, payload=_GEM_PAYLOAD)
+
+gems_result = finsrv.gems_list()
+check("gems_list cuenta como frescas (<14 dias) solo las entradas recientes",
+      gems_result["fresh_for_gems"] == 1 and gems_result["scanned"] == 2, str(gems_result))
+check("gems_list selecciona FRESHCO (fresca y cumple HU-13) end-to-end desde la cache",
+      "FRESHCO" in [g["ticker"] for g in gems_result["gems"]], str(gems_result["gems"]))
+
+# --------------------------------------------------- hidden gems: escaneo (HU-11/HU-12)
+print("\n== Hidden Gems: rotacion de escaneo y sondeo de cobertura (sin red) ==")
+sys.path.insert(0, os.path.join(ROOT, "app"))
+import symbols  # noqa: E402
+import servidor  # noqa: E402
+
+_orig_gems_universe = servidor.gems_universe
+servidor.gems_universe = lambda: {
+    "candidates": [
+        {"ticker": "EU_OLD", "region": "Europa", "held": False},
+        {"ticker": "EU_NEW", "region": "Europa", "held": False},
+        {"ticker": "US_NEVER", "region": "Norteamerica", "held": False},
+        {"ticker": "EU_HELD", "region": "Europa", "held": True},
+    ],
+    "excluded_markets": [], "counts_by_region": {}, "total": 4,
+}
+_old_at = (_dt.datetime.now() - _dt.timedelta(days=30)).isoformat(timespec="seconds")
+_recent_at = (_dt.datetime.now() - _dt.timedelta(days=1)).isoformat(timespec="seconds")
+finsrv.score_cache_upsert(
+    ticker="EU_OLD", scored_at=_old_at, score=5, coverage_pct=60, red_flags=[],
+    market_cap_eur=None, num_analysts=None, sector=None, country=None,
+    region="Europa", quarters_available=None, payload={})
+finsrv.score_cache_upsert(
+    ticker="EU_NEW", scored_at=_recent_at, score=5, coverage_pct=60, red_flags=[],
+    market_cap_eur=None, num_analysts=None, sector=None, country=None,
+    region="Europa", quarters_available=None, payload={})
+
+scan_order = servidor._select_scan_candidates()
+check("la rotacion de escaneo salta las entradas puntuadas hace menos de 7 dias",
+      "EU_NEW" not in scan_order, scan_order)
+check("la rotacion de escaneo excluye los tickers ya en cartera",
+      "EU_HELD" not in scan_order, scan_order)
+check("la rotacion de escaneo prioriza nunca puntuados y luego los mas antiguos, repartido por region",
+      scan_order == ["EU_OLD", "US_NEVER"], scan_order)
+
+servidor.gems_universe = _orig_gems_universe
+
+low_cov_rows = [r for r in symbols.rows() if r["exchange"] == "NMS"][:5]
+high_cov_rows = [r for r in symbols.rows() if r["exchange"] == "MCE"][:5]
+check("hay suficientes tickers NMS/MCE de muestra en el catalogo para el sondeo",
+      len(low_cov_rows) == 5 and len(high_cov_rows) == 5, (len(low_cov_rows), len(high_cov_rows)))
+for r in low_cov_rows:
+    finsrv.score_cache_upsert(
+        ticker=r["symbol"], scored_at=_dt.datetime.now().isoformat(timespec="seconds"),
+        score=4, coverage_pct=20, red_flags=[], market_cap_eur=None, num_analysts=None,
+        sector=None, country=None, region="Norteamerica", quarters_available=None, payload={})
+for r in high_cov_rows:
+    finsrv.score_cache_upsert(
+        ticker=r["symbol"], scored_at=_dt.datetime.now().isoformat(timespec="seconds"),
+        score=7, coverage_pct=80, red_flags=[], market_cap_eur=None, num_analysts=None,
+        sector=None, country=None, region="Europa", quarters_available=None, payload={})
+
+excluded_markets = servidor._excluded_markets()
+check("el sondeo de cobertura excluye un mercado con menos de la mitad por encima del 50%",
+      "NMS" in excluded_markets, excluded_markets)
+check("el sondeo de cobertura no excluye un mercado con buena cobertura",
+      "MCE" not in excluded_markets, excluded_markets)
+
+shutil.rmtree(_GEM_DB_DIR, ignore_errors=True)
+
 # ------------------------------------------------------------------- catalogo (HU-10)
 print("\n== catalogo local de simbolos (sin red) ==")
 import symbols  # noqa: E402

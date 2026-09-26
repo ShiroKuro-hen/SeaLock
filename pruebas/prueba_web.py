@@ -256,6 +256,39 @@ try:
     code, _ = request("/api/app/recommendation_universe", {})
     check("recommendation_universe rechaza llamada sin token", code == 403, f"codigo={code}")
 
+    # --- Hidden Gems (HU-11/HU-12/HU-14): universo y cache son sin red; el escaneo real
+    # se comprueba solo con cancelar de inmediato, para no lanzar un escaneo pesado aqui ---
+    code, r = call("/api/app/gems_universe", {})
+    check("gems_universe responde con candidatos y mercados excluidos (sin red)",
+          code == 200 and "candidates" in r["data"] and "excluded_markets" in r["data"], str(r)[:200])
+
+    code, _ = request("/api/app/gems_universe", {})
+    check("gems_universe rechaza llamada sin token", code == 403, f"codigo={code}")
+
+    code, r = call("/api/finance/gems_list", {})
+    check("gems_list responde (sin red, cache vacia al empezar)",
+          code == 200 and "gems" in r["data"] and "scanned" in r["data"], str(r)[:200])
+
+    code, _ = request("/api/finance/gems_list", {})
+    check("gems_list rechaza llamada sin token", code == 403, f"codigo={code}")
+
+    code, r = call("/api/app/gems_scan_status", {})
+    check("gems_scan_status responde sin escaneo en curso", code == 200 and r["data"]["running"] is False, str(r)[:200])
+
+    code, r = call("/api/app/gems_scan_cancel", {})
+    check("gems_scan_cancel sin escaneo en curso avisa en vez de fallar",
+          code == 200 and r["data"]["ok"] is False, str(r)[:200])
+
+    code, _ = request("/api/app/gems_scan_start", {})
+    check("gems_scan_start rechaza llamada sin token", code == 403, f"codigo={code}")
+
+    # Arranca un escaneo real (limitado a 1 candidato) y lo cancela enseguida: prueba el
+    # endpoint sin someter la app a un escaneo de cientos de tickers.
+    code, r = call("/api/app/gems_scan_start", {"limit": 1})
+    check("gems_scan_start arranca con un limite bajo", code == 200 and r["data"]["ok"], str(r)[:200])
+    code, r = call("/api/app/gems_scan_cancel", {})
+    check("gems_scan_cancel detiene un escaneo en curso", code == 200 and r["data"]["ok"], str(r)[:200])
+
     # --- revision de Claude en la ficha (HU-08/HU-09) ---
     code, r = call("/api/finance/review_set", {
         "ticker": "AAPL", "adjustment": 1, "rationale": "Prueba e2e: trimestre mejor de lo esperado",

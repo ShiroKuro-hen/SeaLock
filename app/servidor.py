@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -33,6 +34,7 @@ import finanzas_server as fin  # noqa: E402
 import llm  # noqa: E402
 import mercado_server as mer  # noqa: E402
 import scoring  # noqa: E402
+import symbols  # noqa: E402
 
 RAW_CACHE_TTL = 6 * 3600  # seconds; quote/fundamentals/historical/dcf/graham/quarterly per ticker.
 # ponytail: el enfriamiento es una constante; el env existe solo para poder probarlo.
@@ -576,6 +578,273 @@ def stock_compare(tickers):
     return {"rows": rows}
 
 
+
+# --------------------------------------------------------------------- hidden gems
+#
+# Candidate universe (HU-11), background scanner + cache (HU-12), UI reads the results
+# via finance.gems_list (mcp/finanzas_server.py), which applies scoring.select_gems and
+# any Claude review with no network of its own.
+
+# Exchange -> region, from the exchanges already present in recursos/simbolos/equities.csv
+# (see docs/plan.md HU-14). An exchange outside this table is not a gem candidate.
+EXCHANGE_REGION = {
+    "NYQ": "Norteamerica", "NMS": "Norteamerica", "NGM": "Norteamerica", "NCM": "Norteamerica",
+    "ASE": "Norteamerica", "TOR": "Norteamerica",
+    "LSE": "Europa", "MCE": "Europa", "PAR": "Europa", "AMS": "Europa", "MIL": "Europa",
+    "GER": "Europa", "EBS": "Europa", "LIS": "Europa", "BRU": "Europa", "STO": "Europa",
+    "CPH": "Europa", "HEL": "Europa", "OSL": "Europa", "VIE": "Europa", "ISE": "Europa",
+    "JPX": "Asia-Pacifico", "HKG": "Asia-Pacifico", "KSC": "Asia-Pacifico", "TAI": "Asia-Pacifico",
+    "NSE": "Asia-Pacifico", "NSI": "Asia-Pacifico", "ASX": "Asia-Pacifico", "SES": "Asia-Pacifico",
+    "SAO": "Latinoamerica", "MEX": "Latinoamerica",
+    "JNB": "Africa",
+}
+
+# HU-11: candidate market_cap categories from the catalog (Small/Mid Cap only).
+GEM_CAP_CATEGORIES = ("Small Cap", "Mid Cap")
+COVERAGE_PROBE_MIN_SAMPLE = 5  # a market needs at least this many scored entries to judge
+MAX_SCAN_CANDIDATES = 300
+SCAN_STALE_DAYS = 7  # HU-12: a cache entry is skipped for a re-scan within this window
+SCAN_WORKERS = 4
+SCAN_BATCH = 8
+SCAN_BACKOFF_SECONDS = (5, 15, 45)  # growing wait after a fully-failed batch
+SCAN_BATCH_PAUSE = 1.0  # short pause between successful batches, to be gentle with Yahoo
+
+
+def _excluded_markets():
+    """Coverage probe (HU-11 simplification, no separate probe table/30-day job): once
+    an exchange has >= COVERAGE_PROBE_MIN_SAMPLE scored entries in score_cache, if fewer
+    than half reach coverage_pct >= 50 the exchange is excluded from further scans. This
+    refreshes naturally as the cache rotates (old entries get rescored over time)."""
+    by_exchange = {}
+    for r in fin.score_cache_all():
+        row = symbols.lookup(r["ticker"])
+        if not row:
+            continue
+        by_exchange.setdefault(row["exchange"], []).append(r.get("coverage_pct") or 0)
+
+    excluded = set()
+    for exch, coverages in by_exchange.items():
+        if len(coverages) < COVERAGE_PROBE_MIN_SAMPLE:
+            continue
+        good = sum(1 for c in coverages if c >= 50)
+        if good < len(coverages) / 2:
+            excluded.add(exch)
+    return excluded
+
+
+def gems_universe():
+    """Candidate list for Hidden Gems (HU-11): catalog rows that are home listings, not
+    OTC, Small/Mid Cap, outside the 111 blue-chip universo.json. No network — the real
+    scan happens separately via gems_scan_start. Held tickers are flagged, not
+    suggested (already visible in Cartera/Recomendaciones)."""
+    blue_chips = {s["ticker"] for s in _load_universe()["stocks"]}
+    try:
+        held = {p["ticker"] for p in fin.portfolio_view()["positions"]}
+    except Exception:  # noqa: BLE001 - the tab still works without held-aware flags
+        held = set()
+
+    excluded_markets = _excluded_markets()
+
+    candidates = []
+    for row in symbols.rows():
+        if row.get("market_cap") not in GEM_CAP_CATEGORIES:
+            continue
+        if symbols.is_otc(row) or not symbols.is_home(row):
+            continue
+        if row["symbol"] in blue_chips:
+            continue
+        if row["exchange"] in excluded_markets:
+            continue
+        region = EXCHANGE_REGION.get(row["exchange"])
+        if not region:
+            continue
+        candidates.append({
+            "ticker": row["symbol"], "name": row["name"], "country": row["country"],
+            "sector": row["sector"], "exchange": row["exchange"], "region": region,
+            "held": row["symbol"] in held,
+        })
+
+    counts_by_region = {}
+    for c in candidates:
+        counts_by_region[c["region"]] = counts_by_region.get(c["region"], 0) + 1
+
+    return {
+        "candidates": candidates,
+        "excluded_markets": sorted(excluded_markets),
+        "counts_by_region": counts_by_region,
+        "total": len(candidates),
+    }
+
+
+def _select_scan_candidates(limit=None):
+    """Up to `limit` (or MAX_SCAN_CANDIDATES) tickers to (re)score: never-scored first,
+    then oldest, spread round-robin across regions so one region can't starve the
+    others. A ticker whose cache entry is younger than SCAN_STALE_DAYS is skipped."""
+    universe = gems_universe()
+    cache_by_ticker = {r["ticker"]: r for r in fin.score_cache_all()}
+    cutoff = (datetime.now() - timedelta(days=SCAN_STALE_DAYS)).isoformat(timespec="seconds")
+
+    by_region = {}
+    for c in universe["candidates"]:
+        if c["held"]:
+            continue
+        cached = cache_by_ticker.get(c["ticker"])
+        if cached and cached["scored_at"] >= cutoff:
+            continue
+        by_region.setdefault(c["region"], []).append((cached["scored_at"] if cached else "", c["ticker"]))
+
+    for region in by_region:
+        by_region[region].sort(key=lambda x: x[0])  # "" (never scored) sorts first, then oldest
+
+    cap = int(limit) if limit else MAX_SCAN_CANDIDATES
+    ordered = []
+    regions = [r for r in by_region if by_region[r]]
+    i = 0
+    while len(ordered) < cap and regions:
+        region = regions[i % len(regions)]
+        ordered.append(by_region[region].pop(0)[1])
+        if not by_region[region]:
+            regions.remove(region)
+        else:
+            i += 1
+    return ordered
+
+
+def _scan_one(ticker, profile):
+    """Score one ticker and persist it to score_cache. Raises on failure: the caller
+    (batch runner) turns that into a per-ticker error, never a scan-wide stop."""
+    raw = _raw_inputs(ticker)
+    fundamentals = raw.get("fundamentals") or {}
+    if fundamentals.get("error"):
+        raise RuntimeError(fundamentals["error"])
+
+    result = scoring.score_stock(
+        raw.get("quote") or {}, fundamentals, raw.get("historical") or {},
+        dcf=raw.get("dcf"), graham=raw.get("graham"), profile=profile,
+        quarterly=raw.get("quarterly") or {}, estimates=raw.get("estimates") or {},
+    )
+    payload = {
+        "name": fundamentals.get("name"),
+        "pillars": [{"key": p["key"], "name_es": p["name_es"], "subscore": p["subscore"],
+                     "details": p["details"]} for p in result["pillars"]],
+        "dividend_variants": scoring.dividend_variants(fundamentals),
+        "red_flags": result["red_flags"],
+        "quarters_available": result["quarters_available"],
+        "quarters_note_es": result["quarters_note_es"],
+        "pros": result["pros"],
+        "cons": result["cons"],
+    }
+
+    catalog_row = symbols.lookup(ticker)
+    region = EXCHANGE_REGION.get(catalog_row["exchange"]) if catalog_row else None
+    currency = fundamentals.get("currency")
+    market_cap = fundamentals.get("market_cap")
+    market_cap_eur = None
+    if market_cap is not None and currency:
+        rate = _rates_to_base([currency]).get(currency)
+        if rate is not None:
+            market_cap_eur = round(market_cap * rate, 2)
+    num_analysts = (fundamentals.get("analyst_consensus") or {}).get("num_analysts")
+
+    fin.score_cache_upsert(
+        ticker=ticker, scored_at=datetime.now().isoformat(timespec="seconds"),
+        score=result["score"], coverage_pct=result["coverage_pct"],
+        red_flags=result["red_flags"], market_cap_eur=market_cap_eur,
+        # Catalog (GICS) sector, not Yahoo's: gems_list compares it with the held
+        # tickers' catalog sectors to mark `diversifies`, offline.
+        num_analysts=num_analysts,
+        sector=(catalog_row or {}).get("sector") or fundamentals.get("sector"),
+        country=fundamentals.get("country") or (catalog_row or {}).get("country"),
+        region=region, quarters_available=result["quarters_available"], payload=payload,
+    )
+
+
+_scan_lock = threading.Lock()
+_scan_state = {
+    "running": False, "done": 0, "total": 0, "errors": [],
+    "started_at": None, "finished_at": None, "status": "idle",
+}
+_scan_cancel = False
+
+
+def _scan_batch(tickers, profile):
+    def run(ticker):
+        try:
+            _scan_one(ticker, profile)
+            return True, None
+        except Exception as exc:  # noqa: BLE001 - one ticker's failure never stops the scan
+            return False, {"ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(SCAN_WORKERS, len(tickers))) as ex:
+        return list(ex.map(run, tickers))
+
+
+def _run_scan(candidates):
+    global _scan_cancel
+    profile = fin.profile_get()
+    consecutive_failed_batches = 0
+    status = "done"
+
+    for i in range(0, len(candidates), SCAN_BATCH):
+        if _scan_cancel:
+            status = "cancelled"
+            break
+        batch = candidates[i:i + SCAN_BATCH]
+        results = _scan_batch(batch, profile)
+        ok_count = sum(1 for ok, _ in results if ok)
+        with _scan_lock:
+            _scan_state["done"] += len(batch)
+            _scan_state["errors"].extend(err for ok, err in results if not ok)
+
+        if ok_count == 0 and batch:
+            consecutive_failed_batches += 1
+            if consecutive_failed_batches >= 3:
+                status = "paused_rate_limited"
+                break
+            time.sleep(SCAN_BACKOFF_SECONDS[min(consecutive_failed_batches - 1, len(SCAN_BACKOFF_SECONDS) - 1)])
+        else:
+            consecutive_failed_batches = 0
+            time.sleep(SCAN_BATCH_PAUSE)
+
+    with _scan_lock:
+        _scan_state["running"] = False
+        _scan_state["status"] = status
+        _scan_state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    _scan_cancel = False
+
+
+def gems_scan_start(limit=None):
+    """Start a background scan (HU-12). Only one at a time; `limit` caps how many
+    candidates it scores (mainly for tests — production scans use MAX_SCAN_CANDIDATES)."""
+    global _scan_cancel
+    with _scan_lock:
+        if _scan_state["running"]:
+            return {"ok": False, "error": "Ya hay un escaneo de gemas en curso."}
+        candidates = _select_scan_candidates(limit)
+        _scan_cancel = False
+        _scan_state.update({
+            "running": True, "done": 0, "total": len(candidates), "errors": [],
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None, "status": "running",
+        })
+    threading.Thread(target=_run_scan, args=(candidates,), daemon=True).start()
+    return {"ok": True, "total": len(candidates)}
+
+
+def gems_scan_status():
+    with _scan_lock:
+        return dict(_scan_state)
+
+
+def gems_scan_cancel():
+    global _scan_cancel
+    with _scan_lock:
+        if not _scan_state["running"]:
+            return {"ok": False, "error": "No hay ningun escaneo de gemas en curso."}
+        _scan_cancel = True
+    return {"ok": True}
+
+
 def export_all():
     """Everything the user owns, as plain rows: local backup to CSV/JSON, no network."""
     return {
@@ -636,6 +905,10 @@ API["app"] = {
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
     "stock_compare": stock_compare,
+    "gems_universe": gems_universe,
+    "gems_scan_start": gems_scan_start,
+    "gems_scan_status": gems_scan_status,
+    "gems_scan_cancel": gems_scan_cancel,
     "export_all": export_all,
     "ask": ask,
     "build_prompt": build_prompt,

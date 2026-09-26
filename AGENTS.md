@@ -292,6 +292,60 @@ nuevas, sobre un universo de blue chips verificado, no sobre chivatazos.
   codigo extra. "Ver ficha completa" abre la ficha de Acciones y anade un boton
   "Volver a recomendaciones" que reabre el mismo indice.
 
+### Hidden Gems
+
+Pestana entre Recomendaciones y Cartera (HU-11..HU-14). Analiza en segundo plano
+empresas Small/Mid Cap de todo el mundo, fuera del universo de blue chips de
+Recomendaciones, con una cache local que sobrevive a los reinicios.
+
+- **Universo candidato (HU-11)**: `app/servidor.py:gems_universe()` (sin red) filtra
+  `symbols.rows()` (catalogo de HU-10) a filas `is_home()`, no OTC, `market_cap` "Small
+  Cap" o "Mid Cap", que no esten en `recursos/universo.json`. `region` sale de un mapa
+  fijo `exchange -> region` (`EXCHANGE_REGION`) sobre los mercados ya presentes en el
+  catalogo. Los tickers en cartera se marcan `held: true`, no se excluyen del todo (se
+  filtran del escaneo, pero siguen contando para "candidatos totales").
+- **Sondeo de cobertura, simplificado**: sin tabla de sondeo ni job de 30 dias. Por cada
+  bolsa (`exchange`), una vez `score_cache` tiene 5 o mas valores puntuados, si menos de
+  la mitad llega a `coverage_pct >= 50`, la bolsa se excluye de futuros escaneos
+  (`_excluded_markets()`). Se recalcula solo, porque `score_cache` rota con el tiempo.
+- **Cache y escaneo en segundo plano (HU-12)**: tabla `score_cache` en
+  `mcp/finanzas_server.py` (datos de mercado, no del usuario) con `payload` JSON: pilares
+  con su subnota y detalles, **las dos variantes del pilar Dividendo**
+  (`scoring.dividend_variants()`: preferencia "dividend" vs. cualquier otra), red flags y
+  trimestres disponibles. `app/servidor.py` escanea en un hilo daemon (solo uno a la
+  vez, con `threading.Lock`): tandas de 8, 4 hilos, pausa entre tandas, y backoff
+  creciente (5/15/45s) tras una tanda entera fallida; a la tercera seguida, estado
+  `paused_rate_limited`. Selecciona hasta 300 candidatos por escaneo, repartidos
+  round-robin entre regiones, priorizando los nunca puntuados y luego los mas antiguos
+  (`_select_scan_candidates`); una entrada puntuada hace menos de 7 dias no se
+  re-escanea. Endpoints `gems_scan_start` (admite `limit` para pruebas),
+  `gems_scan_status` y `gems_scan_cancel`.
+- **Recalculo sin red al cambiar de perfil**: `scoring._score_from_subscores()` es el
+  unico sitio que pondera pilares -> nota; `score_stock()` (calculo fresco, con red) y
+  `scoring.recompute_from_payload()` (perfil nuevo sobre un `payload` ya guardado, sin
+  red) llaman a la misma funcion. Solo cambian los pesos (`_adjust_weights`) y, para
+  Dividendo, que variante de `dividend_variants` se usa segun la `preference`.
+- **Seleccion de gemas (HU-13)**: `scoring.select_gems(candidates, held_tickers,
+  held_sectors)` reutiliza `select_ideas()` para el filtro de poseidos/cobertura/nota
+  minima y la marca `diversifies`, y anade los criterios propios (constantes con
+  nombre): sin `red_flags`; `quarters_available >= GEM_MIN_QUARTERS_AVAILABLE` (2);
+  `market_cap_eur` entre `GEM_MIN_MARKET_CAP_EUR` (300 M) y `GEM_MAX_MARKET_CAP_EUR`
+  (10.000 M), sin dato = fuera; subnota de Valoracion > 0. Orden: nota final desc,
+  subnota de Valoracion desc, menos analistas (`num_analysts`, sin dato al final).
+  `main_reason_es` es el pilar con mejor subnota ponderada (`peso * subnota`).
+  `mcp/finanzas_server.py:gems_list()` (tool MCP de solo lectura, expuesta a la web via
+  el grupo `finance`) junta cache + revision de Claude (`apply_review`, igual que en
+  todas partes) antes de llamar a `select_gems`.
+- **Pestana Hidden Gems (HU-14)**: `app.js` reutiliza las clases CSS de Recomendaciones
+  (`rec-tarjetas`, `rec-idea-tarjeta`, `rec-badge`) para las tarjetas de gema y la barra
+  de progreso ya existente (`.progreso`) para el escaneo. Filtros (region, sector, nota
+  minima) persisten en `localStorage` (`sealock-gemas-filtros`). Navegacion una a una con
+  `location.hash` (`#gem/<indice>`), mismo patron que Recomendaciones (`GEM_RETURN_INDEX`
+  + boton "Volver a Hidden Gems" en la ficha). "Anadir a watchlist" se deshabilita si el
+  ticker ya esta siguiendose.
+- **Sectores**: `score_cache.sector` y el de las posiciones salen del catalogo local
+  (GICS), no de Yahoo, asi que `diversifies` funciona en `finance` sin red.
+
 ### Comparador de acciones
 
 Caja "Comparar acciones" en la pestana Acciones (HU-30): de 2 a 4 tickers separados
@@ -329,8 +383,8 @@ de la fuente es HU-22.
 ## Pruebas
 
 ```bash
-python pruebas/prueba_humo.py    # 125 checks: finance (13 tools, incl. score_reviews) + market (12 tools, incl. quarterly) + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones)
-python pruebas/prueba_web.py     # 50 checks: web API + defensas + B4 glosario + recomendaciones + arranque único + export + nota final y refresco de datos
+python pruebas/prueba_humo.py    # 214 checks: finance + market + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones y Hidden Gems: select_gems, recompute_from_payload, rotacion de escaneo, sondeo de cobertura)
+python pruebas/prueba_web.py     # 80 checks: web API + defensas + B4 glosario + recomendaciones + Hidden Gems (universo/cache/escaneo) + arranque único + export + nota final y refresco de datos
 ```
 
 Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fallo.

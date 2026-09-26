@@ -38,6 +38,14 @@ NOTICE = (
 # "No ampliar" kicks in, by risk tolerance. Used by position_advice() for Recomendaciones.
 CONCENTRATION_LIMITS = {"conservative": 20, "moderate": 25, "aggressive": 35}
 
+# Hidden Gems thresholds (HU-13), named so they're not magic numbers scattered in
+# select_gems().
+GEM_MIN_SCORE = 7
+GEM_MIN_COVERAGE_PCT = 50
+GEM_MIN_QUARTERS_AVAILABLE = 2
+GEM_MIN_MARKET_CAP_EUR = 300_000_000
+GEM_MAX_MARKET_CAP_EUR = 10_000_000_000
+
 
 def _lin(value, bad, good):
     """Score in [-1, 1]: linear from `bad` (-1) to `good` (+1), clamped.
@@ -377,29 +385,16 @@ def _label_for(score, holding=False):
     return "Evitar claramente"
 
 
-def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=None,
-                holding=None, quarterly=None, estimates=None):
-    profile = profile or {}
-    risk_tolerance = profile.get("risk_tolerance", "moderate")
-    horizon = profile.get("horizon", "long")
-    preference = profile.get("preference", "balanced")
-    weights = _adjust_weights(risk_tolerance, horizon, preference)
+def _score_from_subscores(pillar_data, weights, red_flags, holding=False):
+    """Weighting/scoring step shared by score_stock() (fresh computation) and
+    recompute_from_payload() (profile change on a stored payload, no network): given
+    each pillar's (subscore, details) and the profile's weights, combine them into a
+    score, coverage and pros/cons. There is exactly one implementation of this step.
 
-    price = (quote or {}).get("price")
-    f = fundamentals if not (fundamentals or {}).get("error") else {}
-
-    pillar_results = {
-        "quality": _quality(f),
-        "valuation": _valuation(f, dcf, graham, price, estimates),
-        "health": _health(f),
-        "growth": _growth(f),
-        "momentum": _momentum(historical, price),
-        "results": _results(quarterly),
-        "dividend": _dividend(f, preference),
-    }
-
+    `pillar_data`: {key: (subscore_or_None, details)}.
+    """
     pillars, weighted_sum, weight_total, covered_weight = [], 0.0, 0.0, 0.0
-    for key, (subscore, details) in pillar_results.items():
+    for key, (subscore, details) in pillar_data.items():
         w = weights.get(key, 0.0)
         if subscore is None:
             pillars.append({
@@ -412,12 +407,116 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
         weight_total += w
         pillars.append({
             "key": key, "name_es": PILLAR_NAMES_ES[key], "weight": round(w, 1),
-            "subscore": subscore, "details": details,
+            "subscore": subscore, "details": details or [],
         })
 
     x = weighted_sum / weight_total if weight_total else 0.0
     score = int(max(1, min(10, round(1 + (x + 1) * 4.5))))
     coverage_pct = round(covered_weight, 1)
+    if red_flags:
+        score = min(score, 3)
+
+    pros = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] > 0]
+    cons = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] < 0]
+    sentiment = "verde" if score >= 7 else "rojo" if score <= 3 else "ambar"
+    label = _label_for(score, holding=holding)
+    coverage_warning = (
+        f"Cobertura de datos baja ({coverage_pct:.0f}%): la nota se apoya en pocos "
+        "indicadores disponibles, tomala con cautela."
+        if coverage_pct < 50 else None
+    )
+
+    return {
+        "score": score,
+        "label": label,
+        "sentiment": sentiment,
+        "pillars": pillars,
+        "pros": pros,
+        "cons": cons,
+        "coverage_pct": coverage_pct,
+        "coverage_warning": coverage_warning,
+    }
+
+
+def dividend_variants(fundamentals):
+    """Both dividend-pillar variants (preference == "dividend" vs. anything else): the
+    Hidden Gems cache writes a payload before it knows which profile will read it back,
+    so both are stored once at scan time and recompute_from_payload() picks the right
+    one with no network call."""
+    d_pref, det_pref = _dividend(fundamentals, "dividend")
+    d_other, det_other = _dividend(fundamentals, "balanced")
+    return {
+        "dividend": {"subscore": d_pref, "details": det_pref},
+        "other": {"subscore": d_other, "details": det_other},
+    }
+
+
+def recompute_from_payload(payload, profile=None):
+    """Recompute score/label/sentiment for a different investor profile from a stored
+    payload (mcp/finanzas_server.py score_cache.payload), no network. Pillar subscores
+    and details are fixed data already computed at scan time; only the weights (and
+    which dividend variant applies) depend on the profile. Reuses
+    _score_from_subscores, so there is one scoring implementation either way.
+    """
+    profile = profile or {}
+    risk_tolerance = profile.get("risk_tolerance", "moderate")
+    horizon = profile.get("horizon", "long")
+    preference = profile.get("preference", "balanced")
+    weights = _adjust_weights(risk_tolerance, horizon, preference)
+
+    variant = "dividend" if preference == "dividend" else "other"
+    pillar_data = {}
+    for p in payload.get("pillars") or []:
+        if p["key"] == "dividend":
+            dv = (payload.get("dividend_variants") or {}).get(variant) or {}
+            pillar_data["dividend"] = (dv.get("subscore"), dv.get("details") or [])
+        else:
+            pillar_data[p["key"]] = (p.get("subscore"), p.get("details") or [])
+
+    red_flags = payload.get("red_flags") or []
+    result = _score_from_subscores(pillar_data, weights, red_flags, holding=False)
+    quarters_available = payload.get("quarters_available")
+
+    notice = NOTICE
+    if quarters_available is not None and quarters_available < 3:
+        notice += (
+            f" Ademas, la nota se apoya en {quarters_available} de 3 trimestres fiscales"
+            + (f" ({payload['quarters_note_es']})" if payload.get("quarters_note_es") else "")
+            + "."
+        )
+
+    return {
+        **result,
+        "red_flags": red_flags,
+        "is_holding": False,
+        "quarters_available": quarters_available,
+        "quarters_note_es": payload.get("quarters_note_es"),
+        "weights": {k: round(v, 1) for k, v in weights.items()},
+        "profile": {"risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference},
+        "notice": notice,
+    }
+
+
+def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=None,
+                holding=None, quarterly=None, estimates=None):
+    profile = profile or {}
+    risk_tolerance = profile.get("risk_tolerance", "moderate")
+    horizon = profile.get("horizon", "long")
+    preference = profile.get("preference", "balanced")
+    weights = _adjust_weights(risk_tolerance, horizon, preference)
+
+    price = (quote or {}).get("price")
+    f = fundamentals if not (fundamentals or {}).get("error") else {}
+
+    pillar_data = {
+        "quality": _quality(f),
+        "valuation": _valuation(f, dcf, graham, price, estimates),
+        "health": _health(f),
+        "growth": _growth(f),
+        "momentum": _momentum(historical, price),
+        "results": _results(quarterly),
+        "dividend": _dividend(f, preference),
+    }
 
     red_flags = []
     strength = f.get("financial_strength") or {}
@@ -460,9 +559,6 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
                 "deterioro constante."
             )
 
-    if red_flags:
-        score = min(score, 3)
-
     notice = NOTICE
     if quarters_available < 3:
         notice += (
@@ -471,28 +567,11 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
             + "."
         )
 
-    pros = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] > 0]
-    cons = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] < 0]
-
-    sentiment = "verde" if score >= 7 else "rojo" if score <= 3 else "ambar"
-    label = _label_for(score, holding=bool(holding))
-
-    coverage_warning = (
-        f"Cobertura de datos baja ({coverage_pct:.0f}%): la nota se apoya en pocos "
-        "indicadores disponibles, tomala con cautela."
-        if coverage_pct < 50 else None
-    )
+    combined = _score_from_subscores(pillar_data, weights, red_flags, holding=bool(holding))
 
     return {
-        "score": score,
-        "label": label,
-        "sentiment": sentiment,
-        "pillars": pillars,
-        "pros": pros,
-        "cons": cons,
+        **combined,
         "red_flags": red_flags,
-        "coverage_pct": coverage_pct,
-        "coverage_warning": coverage_warning,
         "is_holding": bool(holding),
         "quarters_available": quarters_available,
         "quarters_note_es": q.get("note_es"),
@@ -618,3 +697,64 @@ def select_ideas(candidates, held_tickers, held_sectors, min_score=7):
 
     ideas.sort(key=lambda c: (-c["final_score"], -(c.get("coverage_pct") or 0)))
     return ideas
+
+
+# ------------------------------------------------------------------ hidden gems
+
+
+def _main_reason_es(pillars):
+    """Pillar with the best weighted subscore (weight * subscore), in Spanish: the
+    headline reason a gem made the cut."""
+    scored = [(p["weight"] * p["subscore"], p["name_es"]) for p in (pillars or []) if p.get("subscore") is not None]
+    if not scored:
+        return None
+    return max(scored, key=lambda x: x[0])[1]
+
+
+def select_gems(candidates, held_tickers, held_sectors):
+    """Hidden Gems (HU-13): reuses select_ideas() for the held/coverage/min-score
+    filter and the `diversifies` flag, then narrows to the gem-specific rules and
+    re-sorts. Pure, no I/O.
+
+    `candidates`: iterable of dicts like select_ideas() plus `red_flags` (list),
+    `quarters_available` (int or None), `market_cap_eur` (float or None), `pillars`
+    (score_stock()-shaped list) and optionally `num_analysts`.
+
+    A gem satisfies all of: final_score >= GEM_MIN_SCORE; coverage_pct >=
+    GEM_MIN_COVERAGE_PCT (already enforced by select_ideas); no red_flags;
+    quarters_available >= GEM_MIN_QUARTERS_AVAILABLE; market_cap_eur within
+    [GEM_MIN_MARKET_CAP_EUR, GEM_MAX_MARKET_CAP_EUR] (missing -> excluded); Valuation
+    pillar subscore > 0 (not expensive).
+
+    Order: final_score desc, then Valuation subscore desc, then num_analysts asc
+    (missing goes last: fewer analysts means less followed, more "hidden"). Each gem
+    carries `main_reason_es`: the pillar with the best weighted subscore.
+    """
+    ideas = select_ideas(candidates, held_tickers, held_sectors, min_score=GEM_MIN_SCORE)
+
+    gems = []
+    for c in ideas:
+        if c.get("red_flags"):
+            continue
+        qa = c.get("quarters_available")
+        if qa is None or qa < GEM_MIN_QUARTERS_AVAILABLE:
+            continue
+        mcap = c.get("market_cap_eur")
+        if mcap is None or not (GEM_MIN_MARKET_CAP_EUR <= mcap <= GEM_MAX_MARKET_CAP_EUR):
+            continue
+        valuation = next((p for p in (c.get("pillars") or []) if p.get("key") == "valuation"), None)
+        valuation_subscore = valuation["subscore"] if valuation else None
+        if valuation_subscore is None or valuation_subscore <= 0:
+            continue
+
+        gem = dict(c)
+        gem["valuation_subscore"] = valuation_subscore
+        gem["main_reason_es"] = _main_reason_es(c.get("pillars"))
+        gems.append(gem)
+
+    def sort_key(g):
+        analysts = g.get("num_analysts")
+        return (-g["final_score"], -g["valuation_subscore"], analysts is None, analysts or 0)
+
+    gems.sort(key=sort_key)
+    return gems

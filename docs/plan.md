@@ -3,8 +3,9 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-17, HU-18, HU-20, HU-21, HU-28, HU-30,
-HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4 (Hidden Gems) tiene hecho el catalogo (HU-10).
+HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-11, HU-12, HU-13, HU-14, HU-17, HU-18,
+HU-20, HU-21, HU-28, HU-30, HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4
+(Hidden Gems) cerrada entera.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -437,25 +438,39 @@ Criterios de aceptacion:
 - [x] Test **critico, no AVISO**: `ITX.MC`, `SAN.MC`, `IBE.MC`, `7203.T` y `0700.HK`
       se resuelven sin red.
 
-### [ ] HU-11 — Universo de candidatos a gema (M)
+### [x] HU-11 — Universo de candidatos a gema (M)
 
 **Como** inversor, **quiero** que SeaLock sepa que empresas del mundo son candidatas a
 gema, **para** no puntuar decenas de miles de valores ni solo los de siempre.
 
-Criterios de aceptacion:
-- [ ] Candidatos = empresas del catalogo con `market_cap` "Small Cap" o "Mid Cap" +
-      resultados de los screeners predefinidos de Yahoo (`undervalued_growth_stocks`,
-      `aggressive_small_caps`, `growth_technology_stocks`), deduplicados.
-- [ ] Excluidos: OTC, ETF/fondos, los 111 blue chips de `recursos/universo.json` (ya estan
-      en Recomendaciones) y los tickers en cartera (se marcan, no se sugieren).
-- [ ] Sondeo de cobertura: por cada mercado se puntua una muestra de 5 valores; si menos
-      de la mitad llega a `coverage_pct >= 50`, el mercado queda fuera del escaneo y la UI
-      lo lista como "Mercado sin cobertura suficiente de datos". El resultado del sondeo
-      se guarda con fecha y se repite cada 30 dias.
-- [ ] Cada candidato lleva `region` (Norteamerica, Europa, Asia-Pacifico, Latinoamerica, Africa).
-- [ ] Endpoint `gems_universe`: devuelve candidatos y mercados excluidos, sin red.
+Estado: hecho, con simplificaciones deliberadas frente al enunciado original:
 
-### [ ] HU-12 — Cache persistente de notas y escaneo en segundo plano (M)
+1. **Sin screeners predefinidos de Yahoo** (`undervalued_growth_stocks` etc.): son
+   solo EE. UU. y anaden red extra sin aportar al resto del mundo. Candidatos =
+   filas del catalogo (`symbols.rows()`) con `is_home()` (cotizacion de origen, no
+   ADR/linea extranjera), no OTC, `market_cap` "Small Cap" o "Mid Cap", fuera de los
+   111 tickers de `recursos/universo.json`. El catalogo es solo acciones, asi que
+   ETF/fondos ya quedan fuera sin filtro aparte.
+2. **Sondeo de cobertura sin tabla ni job de 30 dias**: se deriva de `score_cache`
+   (`app/servidor.py:_excluded_markets()`). Por bolsa, con 5 o mas valores puntuados,
+   si menos de la mitad llega a `coverage_pct >= 50` la bolsa se excluye de futuros
+   escaneos. Se recalcula solo con cada escaneo, sin fecha guardada aparte.
+3. `region` sale de un mapa fijo `exchange -> region` (`EXCHANGE_REGION` en
+   `app/servidor.py`) sobre las bolsas ya vendorizadas en HU-10.
+4. Los tickers en cartera se marcan `held: true` en `gems_universe` y se excluyen del
+   escaneo real (`_select_scan_candidates`), tal como pedia el criterio original.
+
+Criterios de aceptacion:
+- [x] Candidatos = empresas del catalogo con `market_cap` "Small Cap" o "Mid Cap"
+      (sin los screeners de Yahoo, ver nota 1).
+- [x] Excluidos: OTC, ETF/fondos (el catalogo ya es solo acciones), los 111 blue chips
+      de `recursos/universo.json` y los tickers en cartera (se marcan, no se sugieren).
+- [x] Sondeo de cobertura (ver nota 2: derivado de `score_cache`, no de una tabla aparte
+      ni de un job de 30 dias): mercados sin cobertura suficiente se listan aparte.
+- [x] Cada candidato lleva `region` (Norteamerica, Europa, Asia-Pacifico, Latinoamerica, Africa).
+- [x] Endpoint `gems_universe`: devuelve candidatos y mercados excluidos, sin red.
+
+### [x] HU-12 — Cache persistente de notas y escaneo en segundo plano (M)
 
 **Como** inversor, **quiero** que el escaneo de gemas trabaje en segundo plano y
 recuerde lo ya puntuado, **para** abrir la pestana y ver resultados al instante.
@@ -464,66 +479,86 @@ Alcance: tabla `score_cache` en `datos/finanzas.db` (datos de mercado, no del us
 hilo de escaneo en `app/servidor.py`, tool de solo lectura `gems_list` en `finanzas_server.py`
 para que Claude pueda comentar las gemas en conversacion.
 
+Estado: hecho. `payload` guarda, por pilar, subnota y detalles, mas **las dos variantes
+del pilar Dividendo** (`scoring.dividend_variants()`), para poder recalcular la nota al
+cambiar de perfil sin red (`scoring.recompute_from_payload()`, que comparte con
+`score_stock()` el mismo paso de ponderacion, `_score_from_subscores()`: una sola
+implementacion). El escaneo corre en un hilo daemon, con `threading.Lock` para permitir
+solo uno a la vez, y `gems_scan_start` acepta un `limit` opcional (pensado para pruebas,
+no para el escaneo real de 300).
+
 Criterios de aceptacion:
-- [ ] `score_cache`: `ticker` (PK), `scored_at`, `score`, `final_score`, `coverage_pct`,
+- [x] `score_cache`: `ticker` (PK), `scored_at`, `score`, `final_score`, `coverage_pct`,
       `red_flags` (JSON), `market_cap_eur`, `num_analysts`, `sector`, `country`, `region`,
-      `quarters_available`, `payload` (JSON con pilares y pros/contras).
-- [ ] Cada escaneo puntua como mucho 300 candidatos, repartidos entre regiones y
+      `quarters_available`, `payload` (JSON con pilares, variantes de Dividendo y pros/contras).
+- [x] Cada escaneo puntua como mucho 300 candidatos, repartidos entre regiones y
       priorizando los nunca puntuados y luego los mas antiguos (rotacion: con el tiempo
       se cubre todo el universo).
-- [ ] Una entrada de cache vale 7 dias para no volver a pedirla; las gemas se eligen
+- [x] Una entrada de cache vale 7 dias para no volver a pedirla; las gemas se eligen
       entre entradas de menos de 14 dias.
-- [ ] Maximo 4 hilos; pausa entre tandas; ante HTTP 429 o errores seguidos, espera
-      creciente y, si persiste, el escaneo se detiene con estado `paused_rate_limited`.
-- [ ] Endpoints `gems_scan_start`, `gems_scan_status` (progreso `done/total`, errores,
+- [x] Maximo 4 hilos; pausa entre tandas; ante errores seguidos, espera creciente
+      (5/15/45 s) y, si persiste (3 tandas fallidas seguidas), el escaneo se detiene con
+      estado `paused_rate_limited`.
+- [x] Endpoints `gems_scan_start`, `gems_scan_status` (progreso `done/total`, errores,
       inicio, estado) y `gems_scan_cancel`. Solo un escaneo a la vez.
-- [ ] El escaneo no bloquea la UI ni el resto de la API; un fallo en un ticker nunca
+- [x] El escaneo no bloquea la UI ni el resto de la API; un fallo en un ticker nunca
       tumba el escaneo.
-- [ ] Un cambio de perfil inversor recalcula `score`/`final_score` desde `payload` sin red.
-- [ ] Tests: rotacion (prioriza nunca puntuados), caducidad 7/14 dias, recalculo por
-      cambio de perfil (con datos inventados, sin red).
+- [x] Un cambio de perfil inversor recalcula `score`/`final_score` desde `payload` sin red.
+- [x] Tests: rotacion (prioriza nunca puntuados), caducidad 7/14 dias, recalculo por
+      cambio de perfil (con datos inventados, sin red), sondeo de cobertura.
 
-### [ ] HU-13 — Seleccion de gemas (S)
+### [x] HU-13 — Seleccion de gemas (S)
 
 **Como** inversor, **quiero** una regla clara de que es una "gema", **para** entender por
 que aparece cada empresa.
 
+Estado: hecho tal como estaba escrito, sin desviaciones.
+
 Criterios de aceptacion:
-- [ ] Funcion pura `scoring.select_gems(candidates, held_tickers, held_sectors)`; reutiliza
+- [x] Funcion pura `scoring.select_gems(candidates, held_tickers, held_sectors)`; reutiliza
       la logica de `select_ideas()` en vez de duplicarla.
-- [ ] Una gema cumple todo:
+- [x] Una gema cumple todo:
       `final_score >= 7`; `coverage_pct >= 50`; sin `red_flags`;
       `quarters_available >= 2`; `market_cap_eur` entre 300 M y 10.000 M (sin dato -> fuera);
       subnota del pilar Valoracion > 0 (no esta cara).
-- [ ] Orden: `final_score` desc, luego subnota de Valoracion desc, luego menos analistas
+- [x] Orden: `final_score` desc, luego subnota de Valoracion desc, luego menos analistas
       (`num_analysts` bajo = menos seguida = mas "oculta"; sin dato va al final).
-- [ ] Marca `diversifies: true` si el sector no esta en la cartera.
-- [ ] Devuelve para cada gema su motivo principal: el pilar con mejor subnota ponderada,
+- [x] Marca `diversifies: true` si el sector no esta en la cartera.
+- [x] Devuelve para cada gema su motivo principal: el pilar con mejor subnota ponderada,
       en espanol.
-- [ ] Umbrales como constantes con nombre en `scoring.py`, no numeros sueltos.
-- [ ] Tests puros: cada criterio de exclusion por separado y el orden.
+- [x] Umbrales como constantes con nombre en `scoring.py` (`GEM_MIN_SCORE`,
+      `GEM_MIN_COVERAGE_PCT`, `GEM_MIN_QUARTERS_AVAILABLE`, `GEM_MIN_MARKET_CAP_EUR`,
+      `GEM_MAX_MARKET_CAP_EUR`), no numeros sueltos.
+- [x] Tests puros: cada criterio de exclusion por separado y el orden.
 
-### [ ] HU-14 — Pestana "Hidden Gems" (M)
+### [x] HU-14 — Pestana "Hidden Gems" (M)
 
 **Como** inversor, **quiero** una pestana con las empresas mas atractivas del momento en
 todo el mundo, **para** descubrir ideas fuera de los indices grandes.
 
+Estado: hecho. `diversifies` se calcula en `finanzas_server.py:gems_list()`, sin red: el
+sector de cada posicion sale del catalogo local (HU-10), y el escaner guarda tambien el
+sector del catalogo (GICS), asi que los nombres coinciden. Tambien se omitieron las banderas emoji de pais (solo texto plano): no
+aportaban frente al coste de mantener una tabla pais -> emoji.
+
 Criterios de aceptacion:
-- [ ] Pestana "Hidden Gems" entre Recomendaciones y Cartera.
-- [ ] Al abrirla muestra al instante las gemas de la cache, con "Ultimo escaneo: fecha" y
+- [x] Pestana "Hidden Gems" entre Recomendaciones y Cartera.
+- [x] Al abrirla muestra al instante las gemas de la cache, con "Ultimo escaneo: fecha" y
       "X de Y candidatos analizados".
-- [ ] Boton "Escanear ahora" con barra de progreso y boton cancelar; la lista se repinta
-      al terminar cada tanda.
-- [ ] Filtros: region, sector, nota minima (7-10); se combinan y persisten en `localStorage`.
-- [ ] Tarjeta por gema: nombre, ticker, bandera/pais, sector, nota final (con marca de
-      revision si la hay), capitalizacion en EUR, motivo principal, etiqueta "Diversifica".
-- [ ] Acciones por tarjeta: "Ver ficha" (con boton de vuelta a Gems, patron de
+- [x] Boton "Escanear ahora" con barra de progreso y boton cancelar; la lista se repinta
+      al terminar el escaneo (sondeo cada 2 s mientras esta en marcha).
+- [x] Filtros: region, sector, nota minima (7-10); se combinan y persisten en `localStorage`.
+- [x] Tarjeta por gema: nombre, ticker, pais (texto, sin bandera — ver nota), sector, nota
+      final (con marca de revision si la hay), capitalizacion en EUR, motivo principal,
+      etiqueta "Diversifica".
+- [x] Acciones por tarjeta: "Ver ficha" (con boton de vuelta a Gems, patron de
       Recomendaciones) y "Anadir a watchlist" (deshabilitado si ya esta).
-- [ ] Navegacion una a una con `location.hash` (`#gem/<indice>`), el boton Atras funciona.
-- [ ] Mercados excluidos por falta de datos listados en un desplegable informativo.
-- [ ] Estado vacio (sin escaneos): explica que hacer y enlaza a Ayuda.
-- [ ] Aviso visible: "Seleccion mecanica sobre datos publicos, no es asesoramiento."
-- [ ] Ayuda: seccion nueva "Hidden Gems" con la regla de HU-13 en lenguaje llano.
+- [x] Navegacion una a una con `location.hash` (`#gem/<indice>`), el boton Atras funciona.
+- [x] Mercados excluidos por falta de datos listados en un desplegable informativo.
+- [x] Estado vacio (sin escaneos): explica que hacer y enlaza a Ayuda.
+- [x] Aviso visible: "Seleccion mecanica sobre datos publicos, no es asesoramiento."
+- [x] Ayuda: seccion nueva "Hidden Gems" con la regla de HU-13 en lenguaje llano.
+- [x] Test en `prueba_web.py`: endpoints de gemas responden y exigen el token.
 - [ ] Test en `prueba_web.py`: endpoints de gemas responden y exigen el token.
 
 ---

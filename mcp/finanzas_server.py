@@ -10,6 +10,8 @@ import sqlite3
 from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta
 
+import scoring
+import symbols
 from mcp_common import MCPServer, log
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -72,8 +74,25 @@ CREATE TABLE IF NOT EXISTS score_reviews (
     author TEXT NOT NULL DEFAULT 'claude'
 );
 
+CREATE TABLE IF NOT EXISTS score_cache (
+    ticker TEXT PRIMARY KEY,
+    scored_at TEXT NOT NULL,
+    score INTEGER,
+    final_score REAL,
+    coverage_pct REAL,
+    red_flags TEXT NOT NULL DEFAULT '[]',
+    market_cap_eur REAL,
+    num_analysts INTEGER,
+    sector TEXT,
+    country TEXT,
+    region TEXT,
+    quarters_available INTEGER,
+    payload TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_score_reviews_ticker ON score_reviews(ticker);
+CREATE INDEX IF NOT EXISTS idx_score_cache_region ON score_cache(region);
 """
 
 
@@ -637,13 +656,114 @@ def review_delete(id, confirm=False):
     return {"ok": True, "deleted": _review_row(row)}
 
 
+# ----------------------------------------------------------------- hidden gems
+#
+# score_cache holds market data (not user data): the Hidden Gems scan results, written
+# by app/servidor.py's background scanner (it has network access; this server does
+# not). These are plain functions, not MCP tools: the scanner calls them directly in
+# the same process. gems_list below IS a tool, so Claude can read the current gems.
+
+GEM_FRESH_DAYS = 14  # HU-12/HU-13: gems are chosen among entries scored within this window
+
+
+def score_cache_upsert(ticker, scored_at, score, coverage_pct, red_flags, market_cap_eur,
+                       num_analysts, sector, country, region, quarters_available, payload):
+    with db() as cx:
+        cx.execute(
+            """INSERT INTO score_cache (ticker, scored_at, score, final_score, coverage_pct,
+                                         red_flags, market_cap_eur, num_analysts, sector,
+                                         country, region, quarters_available, payload)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(ticker) DO UPDATE SET
+                 scored_at = excluded.scored_at,
+                 score = excluded.score,
+                 final_score = excluded.final_score,
+                 coverage_pct = excluded.coverage_pct,
+                 red_flags = excluded.red_flags,
+                 market_cap_eur = excluded.market_cap_eur,
+                 num_analysts = excluded.num_analysts,
+                 sector = excluded.sector,
+                 country = excluded.country,
+                 region = excluded.region,
+                 quarters_available = excluded.quarters_available,
+                 payload = excluded.payload""",
+            (ticker, scored_at, score, score, coverage_pct, json.dumps(red_flags or []),
+             market_cap_eur, num_analysts, sector, country, region, quarters_available,
+             json.dumps(payload or {})),
+        )
+    return {"ok": True, "ticker": ticker}
+
+
+def score_cache_all():
+    """Every cached ticker, with red_flags/payload already decoded."""
+    with db() as cx:
+        data = rows(cx.execute("SELECT * FROM score_cache"))
+    for r in data:
+        r["red_flags"] = json.loads(r["red_flags"] or "[]")
+        r["payload"] = json.loads(r["payload"] or "{}")
+    return data
+
+
+@srv.tool(
+    "gems_list",
+    "Current Hidden Gems (HU-13 rule) from the local score cache: no network. Combines "
+    "each cached mechanical score with any active Claude review (final_score), the same "
+    "way the rest of the app does, so Claude can comment on what's already showing.",
+    {},
+)
+def gems_list():
+    cache = score_cache_all()
+    profile = profile_get()
+    cutoff = (date.today() - timedelta(days=GEM_FRESH_DAYS)).isoformat()
+    fresh = [r for r in cache if r["scored_at"][:10] >= cutoff]
+
+    try:
+        held_tickers = [p["ticker"] for p in portfolio_view()["positions"]]
+    except Exception:  # noqa: BLE001 - gems still work without portfolio context
+        held_tickers = []
+    # Held sectors come from the local catalog (offline, same GICS names the scanner
+    # stores), so `diversifies` works without network.
+    held_sectors = {(symbols.lookup(t) or {}).get("sector") for t in held_tickers} - {None, ""}
+
+    candidates = []
+    for r in fresh:
+        mech = scoring.recompute_from_payload(r["payload"], profile)
+        review = None
+        try:
+            review = review_get(r["ticker"])["review"]
+        except Exception:  # noqa: BLE001 - a missing review must never break the list
+            review = None
+        applied = scoring.apply_review(mech, review)
+        candidates.append({
+            "ticker": r["ticker"], "name": (r["payload"] or {}).get("name"),
+            "scored_at": r["scored_at"],
+            "score": mech["score"], "final_score": applied["final_score"],
+            "label": applied["label"], "sentiment": applied["sentiment"],
+            "review": review, "review_applied": applied["review_applied"],
+            "coverage_pct": mech["coverage_pct"], "coverage_warning": mech["coverage_warning"],
+            "red_flags": mech["red_flags"], "pros": mech["pros"], "cons": mech["cons"],
+            "notice": mech["notice"], "pillars": mech["pillars"],
+            "quarters_available": r["quarters_available"],
+            "market_cap_eur": r["market_cap_eur"], "num_analysts": r["num_analysts"],
+            "sector": r["sector"], "country": r["country"], "region": r["region"],
+        })
+
+    gems = scoring.select_gems(candidates, held_tickers, held_sectors)
+    return {
+        "gems": gems,
+        "scanned": len(cache),
+        "fresh_for_gems": len(fresh),
+        "candidates_considered": len(candidates),
+    }
+
+
 # ------------------------------------------------------------------------- SQL
 
 
 @srv.tool(
     "sql_query",
     "Run a read-only SELECT query against the database, for analysis not covered "
-    "by the other tools. Tables: trades, watchlist, profile, score_reviews.",
+    "by the other tools. Tables: trades, watchlist, profile, score_reviews, score_cache.",
     {
         "sql": {"type": "string", "description": "Must start with SELECT or WITH"},
         "limit": {"type": "integer", "default": 200},

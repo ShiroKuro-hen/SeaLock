@@ -14,6 +14,7 @@
   <nav class="pestanas">
     <button class="pestana activa" data-view="acciones">Acciones</button>
     <button class="pestana" data-view="recomendaciones">Recomendaciones</button>
+    <button class="pestana" data-view="gemas">Hidden Gems</button>
     <button class="pestana" data-view="cartera">Cartera</button>
     <button class="pestana" data-view="ayuda">Ayuda</button>
   </nav>
@@ -132,6 +133,46 @@
   <div id="rec-visor" style="display:none"></div>
 </section>
 
+<!-- ========================================================= HIDDEN GEMS -->
+<section class="vista" id="vista-gemas">
+  <div class="caja">
+    <div class="cabecera-caja">
+      <h2>Hidden Gems</h2>
+      <a class="btn-ayuda" href="#" data-section="gemas" title="Mas informacion">?</a>
+      <button id="btn-escanear-gemas">Escanear ahora</button>
+      <button id="btn-cancelar-escaneo-gemas" style="display:none">Cancelar</button>
+    </div>
+    <p class="ayuda" id="gemas-estado">Cargando…</p>
+    <div id="gemas-progreso" style="display:none"></div>
+    <p><b>Seleccion mecanica sobre datos publicos, no es asesoramiento.</b></p>
+    <details id="gemas-excluidos"><summary>Mercados sin cobertura suficiente de datos</summary>
+      <div id="gemas-excluidos-lista" class="tenue"></div>
+    </details>
+  </div>
+
+  <div class="caja" id="gemas-filtros-caja">
+    <form id="form-gemas-filtros" class="form-linea">
+      <label>Region
+        <select name="region"><option value="">Todas</option></select>
+      </label>
+      <label>Sector
+        <select name="sector"><option value="">Todos</option></select>
+      </label>
+      <label>Nota minima
+        <select name="minScore">
+          <option value="7">7+</option>
+          <option value="8">8+</option>
+          <option value="9">9+</option>
+          <option value="10">10</option>
+        </select>
+      </label>
+    </form>
+  </div>
+
+  <div id="gemas-lista"></div>
+  <div id="gemas-visor" style="display:none"></div>
+</section>
+
 <!-- ========================================================= ACCIONES -->
 <section class="vista activa" id="vista-acciones">
   <div class="caja">
@@ -211,6 +252,35 @@
       <li>Puntuar el universo completo tarda: se analiza en tandas, con progreso en pantalla.</li>
     </ul>
     <p><b>Es una puntuacion mecanica sobre datos publicos, no asesoramiento de un profesional con licencia. La decision es tuya.</b></p>
+  </div>
+
+  <div class="caja" data-section="gemas">
+    <h2>Hidden Gems</h2>
+    <p>Empresas pequenas y medianas (Small/Mid Cap) de todo el mundo que no estan en el
+      Dow Jones, el EURO STOXX 50 ni el IBEX 35 — el universo de Recomendaciones. Se
+      analizan en segundo plano, con cache local: la pestana abre al instante con lo ya
+      puntuado.</p>
+    <p><b>Una empresa es una "gema" cuando cumple todo esto:</b></p>
+    <ul>
+      <li>Nota final 7 o mas.</li>
+      <li>Cobertura de datos del 50% o mas.</li>
+      <li>Sin ninguna senal de alerta activa.</li>
+      <li>Al menos 2 de los 3 ultimos trimestres fiscales con datos.</li>
+      <li>Capitalizacion entre 300 M y 10.000 M de euros (sin ese dato, queda fuera).</li>
+      <li>El pilar de Valoracion en positivo: no esta cara.</li>
+    </ul>
+    <p>Se ordenan por nota final, luego por el pilar de Valoracion, y por ultimo por
+      menos analistas siguiendo el valor (menos seguimiento = mas "oculta"). Se marca
+      "Diversifica" si el sector no esta ya en tu cartera.</p>
+    <ul>
+      <li><b>Escanear ahora</b> — puntua hasta 300 candidatos en segundo plano, 4 a la vez,
+        con pausas para no saturar la fuente de datos. Se puede cancelar.</li>
+      <li><b>Filtros</b> — region, sector y nota minima, se recuerdan entre sesiones.</li>
+      <li><b>Mercados excluidos</b> — bolsas sin suficientes datos fiables se dejan fuera
+        del escaneo y se listan aparte.</li>
+    </ul>
+    <p><b>Es una seleccion mecanica sobre datos publicos, no asesoramiento de un
+      profesional con licencia. La decision es tuya.</b></p>
   </div>
 
   <div class="caja" data-section="nota">

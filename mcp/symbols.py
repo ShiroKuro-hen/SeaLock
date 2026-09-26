@@ -75,6 +75,12 @@ def lookup(symbol):
     return _load()["by_symbol"].get((symbol or "").upper().strip())
 
 
+def rows():
+    """Every catalog row, one per symbol. Used to build the Hidden Gems candidate
+    universe (HU-11): no copy, no filtering, that's the caller's job."""
+    return list(_load()["by_symbol"].values())
+
+
 def is_otc(row):
     return bool(row) and row.get("mic") == OTC_MIC
 

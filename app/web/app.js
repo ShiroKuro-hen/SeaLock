@@ -603,10 +603,10 @@ function renderNews() {
   }));
 }
 
-async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null, refresh = false) {
+async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null, refresh = false, fromGem = null) {
   const cont = document.getElementById("ficha");
   CURRENT_STOCK = { ticker, assumptions };
-  if (!silencioso) REC_RETURN_INDEX = fromRec;
+  if (!silencioso) { REC_RETURN_INDEX = fromRec; GEM_RETURN_INDEX = fromGem; }
 
   if (!silencioso) {
     cont.innerHTML = `<div class="caja"><div class="cargando">Analizando ${esc(ticker)}…</div></div>`;
@@ -739,6 +739,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
           <button id="btn-seguir">Anadir a seguimiento</button>
           <button id="btn-actualizar-nota" title="Volver a pedir los datos y recalcular la nota">Actualizar nota</button>
           ${REC_RETURN_INDEX !== null ? '<button id="btn-volver-rec">← Volver a recomendaciones</button>' : ""}
+          ${GEM_RETURN_INDEX !== null ? '<button id="btn-volver-gem">← Volver a Hidden Gems</button>' : ""}
         </div>
         <p class="ayuda" style="margin:12px 0 0">
           Datos de fuentes publicas, precios diferidos ~15 min. Analisis, no recomendacion
@@ -804,11 +805,11 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
 
     document.getElementById("form-dcf").addEventListener("submit", (ev) => {
       ev.preventDefault();
-      viewStock(ticker, formData(ev.target), false, REC_RETURN_INDEX);
+      viewStock(ticker, formData(ev.target), false, REC_RETURN_INDEX, false, GEM_RETURN_INDEX);
     });
     document.getElementById("btn-actualizar-nota").addEventListener("click", () => {
       CURRENT_STOCK.assumptions = formData(document.getElementById("form-dcf"));
-      viewStock(ticker, CURRENT_STOCK.assumptions, false, REC_RETURN_INDEX, true);
+      viewStock(ticker, CURRENT_STOCK.assumptions, false, REC_RETURN_INDEX, true, GEM_RETURN_INDEX);
     });
     document.getElementById("btn-seguir").addEventListener("click", async () => {
       await api("finance", "watchlist_add", { ticker, name: f.name || null });
@@ -819,9 +820,14 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       changeView("recomendaciones");
       openRecViewer(idx);
     });
+    document.getElementById("btn-volver-gem")?.addEventListener("click", () => {
+      const idx = GEM_RETURN_INDEX;
+      changeView("gemas");
+      openGemViewer(idx);
+    });
   } catch (e) {
     if (silencioso) notify(`No se pudo actualizar ${ticker}: ${e.message}`, "malo");
-    else renderError("ficha", e, () => viewStock(ticker, assumptions, false, fromRec));
+    else renderError("ficha", e, () => viewStock(ticker, assumptions, false, fromRec, false, fromGem));
   }
 }
 
@@ -1409,6 +1415,296 @@ async function loadRecommendations() {
   renderRecIdeas();
 }
 
+/* --------------------------------------------------------------- HIDDEN GEMS */
+
+const GEM_FILTERS_KEY = "sealock-gemas-filtros";
+let GEM_ALL = [];        // ultima lista completa de gemas (finance.gems_list)
+let GEM_VIEW = [];        // GEM_ALL tras aplicar filtros: lo que se pinta y se navega
+let GEM_META = null;      // {scanned, fresh_for_gems, candidates_considered}
+let GEM_UNIVERSE_TOTAL = null;
+let GEM_WATCHLIST = new Set();
+let GEM_SCAN_POLL = null;
+let GEM_RETURN_INDEX = null;
+
+function loadGemFilters() {
+  try {
+    return JSON.parse(localStorage.getItem(GEM_FILTERS_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveGemFilters(f) {
+  localStorage.setItem(GEM_FILTERS_KEY, JSON.stringify(f));
+}
+
+function applyGemFilters() {
+  const f = loadGemFilters();
+  GEM_VIEW = GEM_ALL.filter((g) =>
+    (!f.region || g.region === f.region)
+    && (!f.sector || g.sector === f.sector)
+    && (!f.minScore || g.final_score >= Number(f.minScore)));
+}
+
+function populateGemFilterOptions() {
+  const form = document.getElementById("form-gemas-filtros");
+  if (!form) return;
+  const f = loadGemFilters();
+  const regiones = [...new Set(GEM_ALL.map((g) => g.region).filter(Boolean))].sort();
+  const sectores = [...new Set(GEM_ALL.map((g) => g.sector).filter(Boolean))].sort();
+  form.elements.region.innerHTML = '<option value="">Todas</option>'
+    + regiones.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+  form.elements.sector.innerHTML = '<option value="">Todos</option>'
+    + sectores.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  form.elements.region.value = f.region || "";
+  form.elements.sector.value = f.sector || "";
+  form.elements.minScore.value = f.minScore || "7";
+}
+
+function renderGemsStatus() {
+  const el = document.getElementById("gemas-estado");
+  if (!el) return;
+  if (!GEM_META) { el.textContent = "Cargando…"; return; }
+  const ultimo = GEM_ALL.reduce((max, g) => (g.scored_at && (!max || g.scored_at > max) ? g.scored_at : max), null);
+  el.innerHTML = (ultimo ? `Ultimo escaneo: <b>${esc(ultimo)}</b> · ` : "Sin escaneos todavia. ")
+    + `${GEM_META.scanned} de ${GEM_UNIVERSE_TOTAL ?? "?"} candidatos analizados.`;
+}
+
+function renderGemsExcluded(excluidos) {
+  const box = document.getElementById("gemas-excluidos");
+  const lista = document.getElementById("gemas-excluidos-lista");
+  if (!box || !lista) return;
+  if (!excluidos || !excluidos.length) {
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "";
+  lista.innerHTML = excluidos.map((m) => `<span class="rec-badge">${esc(m)}</span>`).join(" ");
+}
+
+function renderGemsList() {
+  const cont = document.getElementById("gemas-lista");
+  if (!cont) return;
+  applyGemFilters();
+  if (!GEM_ALL.length) {
+    cont.innerHTML = `<div class="caja"><div class="vacio">Sin gemas todavia. Pulsa
+      "Escanear ahora" para analizar el universo, o consulta <a href="#" id="gemas-ir-ayuda">Ayuda</a>
+      para saber como se eligen.</div></div>`;
+    document.getElementById("gemas-ir-ayuda")?.addEventListener("click", (e) => {
+      e.preventDefault(); changeView("ayuda"); openHelpCard(null, "gemas");
+    });
+    return;
+  }
+  if (!GEM_VIEW.length) {
+    cont.innerHTML = `<div class="caja"><div class="vacio">Ninguna gema cumple los filtros actuales.</div></div>`;
+    return;
+  }
+  cont.innerHTML = `<div class="rec-tarjetas">${GEM_VIEW.map((g, i) => `
+    <div class="rec-idea-tarjeta" data-gem-idx="${i}" tabindex="0" role="button"
+      aria-label="Ver detalle de ${esc(g.ticker)}">
+      <div class="rec-idea-cab"><span class="ticker">${esc(g.ticker)}</span>
+        <span class="${g.sentiment}" style="font-weight:700">${number(g.final_score, g.review_applied ? 1 : 0)}/10</span>${marcaRevision(g)}</div>
+      <div class="tenue" style="font-size:13px">${esc(g.name || "")}</div>
+      <div class="tenue" style="font-size:12px">${esc(g.country || "")}${g.sector ? ` · ${esc(g.sector)}` : ""}</div>
+      <div style="margin-top:6px"><span class="rec-badge">${esc(g.region || "")}</span>
+        ${g.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}</div>
+      <div class="tenue" style="font-size:13px;margin-top:4px">Capitaliz. ${compact(g.market_cap_eur)}</div>
+      ${g.main_reason_es ? `<div class="tenue" style="font-size:12px;margin-top:2px">Motivo principal: ${esc(g.main_reason_es)}</div>` : ""}
+      <div class="acciones-caja" style="margin-top:8px">
+        <button type="button" class="mini" data-gem-watch="${esc(g.ticker)}"
+          ${GEM_WATCHLIST.has(g.ticker) ? "disabled" : ""}>${GEM_WATCHLIST.has(g.ticker) ? "Ya en seguimiento" : "Anadir a watchlist"}</button>
+      </div>
+    </div>`).join("")}</div>`;
+
+  cont.querySelectorAll("[data-gem-watch]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const ticker = btn.dataset.gemWatch;
+      try {
+        await api("finance", "watchlist_add", { ticker });
+        GEM_WATCHLIST.add(ticker);
+        notify(`${ticker} anadido a seguimiento`, "bueno");
+        renderGemsList();
+      } catch (err) {
+        notify(err.message, "malo");
+      }
+    });
+  });
+  cont.querySelectorAll("[data-gem-idx]").forEach((el) => {
+    const open = () => openGemViewer(Number(el.dataset.gemIdx));
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+}
+
+function openGemViewer(index) {
+  location.hash = `#gem/${index}`;
+}
+
+function closeGemViewer() {
+  if (location.hash.startsWith("#gem/")) location.hash = "";
+  else {
+    document.getElementById("gemas-visor").style.display = "none";
+    document.getElementById("gemas-lista").style.display = "";
+  }
+}
+
+function renderGemViewer(index) {
+  const item = GEM_VIEW[index];
+  const visor = document.getElementById("gemas-visor");
+  if (!item) { closeGemViewer(); return; }
+
+  document.getElementById("gemas-lista").style.display = "none";
+  document.getElementById("gemas-filtros-caja").style.display = "none";
+  visor.style.display = "";
+  const total = GEM_VIEW.length;
+
+  visor.innerHTML = `
+    <div class="caja">
+      <div class="rec-visor-nav">
+        <button id="gem-prev" ${index === 0 ? "disabled" : ""}>← Anterior</button>
+        <span class="tenue">${index + 1} / ${total}</span>
+        <button id="gem-next" ${index === total - 1 ? "disabled" : ""}>Siguiente →</button>
+      </div>
+      <h2 tabindex="-1" id="gem-visor-titulo">${esc(item.name || item.ticker)} <span class="tenue">${esc(item.ticker)}</span></h2>
+      <div>
+        <span class="rec-badge">${esc(item.region || "")}</span>
+        <span class="rec-badge">${esc(item.country || "")}</span>
+        ${item.sector ? `<span class="rec-badge">${esc(item.sector)}</span>` : ""}
+        ${item.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}
+      </div>
+      <div class="metricas" style="margin:14px 0">
+        <div class="metrica" data-glosario="Capitalizacion"><div class="k">Capitalizacion</div><div class="v">${compact(item.market_cap_eur)}</div></div>
+        <div class="metrica"><div class="k">Motivo principal</div><div class="v">${esc(item.main_reason_es || "—")}</div></div>
+      </div>
+      ${renderScore(item)}
+      <div class="acciones-caja">
+        <button type="button" id="gem-watch" ${GEM_WATCHLIST.has(item.ticker) ? "disabled" : ""}>
+          ${GEM_WATCHLIST.has(item.ticker) ? "Ya en seguimiento" : "Anadir a watchlist"}</button>
+        <button id="gem-volver-lista">Volver a la lista</button>
+        <button id="gem-ver-ficha">Ver ficha completa</button>
+      </div>
+    </div>`;
+
+  document.getElementById("gem-prev").addEventListener("click", () => openGemViewer(index - 1));
+  document.getElementById("gem-next").addEventListener("click", () => openGemViewer(index + 1));
+  document.getElementById("gem-volver-lista").addEventListener("click", closeGemViewer);
+  visor.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
+  document.getElementById("gem-watch").addEventListener("click", async () => {
+    try {
+      await api("finance", "watchlist_add", { ticker: item.ticker });
+      GEM_WATCHLIST.add(item.ticker);
+      notify(`${item.ticker} anadido a seguimiento`, "bueno");
+      renderGemViewer(index);
+    } catch (err) {
+      notify(err.message, "malo");
+    }
+  });
+  document.getElementById("gem-ver-ficha").addEventListener("click", () => {
+    changeView("acciones");
+    viewStock(item.ticker, {}, false, null, false, index);
+  });
+  document.getElementById("gem-visor-titulo").focus();
+}
+
+function maybeRestoreGemViewerFromHash() {
+  const m = location.hash.match(/^#gem\/(\d+)$/);
+  if (m && Number(m[1]) < GEM_VIEW.length) renderGemViewer(Number(m[1]));
+}
+
+window.addEventListener("hashchange", () => {
+  if (document.querySelector(".pestana.activa")?.dataset.view !== "gemas") return;
+  const m = location.hash.match(/^#gem\/(\d+)$/);
+  if (m) renderGemViewer(Number(m[1]));
+  else {
+    document.getElementById("gemas-visor").style.display = "none";
+    document.getElementById("gemas-lista").style.display = "";
+    document.getElementById("gemas-filtros-caja").style.display = "";
+  }
+});
+
+async function loadGems() {
+  try {
+    const [gemsResp, universe, watchlist] = await Promise.all([
+      api("finance", "gems_list"),
+      api("app", "gems_universe"),
+      api("finance", "watchlist_list").catch(() => ({ watchlist: [] })),
+    ]);
+    GEM_ALL = gemsResp.gems || [];
+    GEM_META = { scanned: gemsResp.scanned, fresh_for_gems: gemsResp.fresh_for_gems,
+                 candidates_considered: gemsResp.candidates_considered };
+    GEM_UNIVERSE_TOTAL = universe.total;
+    GEM_WATCHLIST = new Set((watchlist.watchlist || []).map((w) => w.ticker));
+    renderGemsExcluded(universe.excluded_markets);
+    populateGemFilterOptions();
+    renderGemsStatus();
+    renderGemsList();
+    maybeRestoreGemViewerFromHash();
+  } catch (e) {
+    renderError("gemas-lista", e, () => loadGems());
+  }
+}
+
+function renderGemScanProgress(status) {
+  const cont = document.getElementById("gemas-progreso");
+  const btnScan = document.getElementById("btn-escanear-gemas");
+  const btnCancel = document.getElementById("btn-cancelar-escaneo-gemas");
+  if (!status || !status.running) {
+    cont.style.display = "none";
+    btnScan.disabled = false;
+    btnCancel.style.display = "none";
+    return;
+  }
+  btnScan.disabled = true;
+  btnCancel.style.display = "";
+  cont.style.display = "";
+  const pct = status.total ? Math.round((100 * status.done) / status.total) : 0;
+  cont.innerHTML = `<div class="progreso"><div class="fila">
+      <span>Analizando ${status.done}/${status.total}…</span>
+      <span>${status.errors.length} error(es)</span>
+    </div>
+    <div class="barra"><div class="relleno" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
+async function pollGemScan() {
+  try {
+    const status = await api("app", "gems_scan_status");
+    renderGemScanProgress(status);
+    if (!status.running) {
+      clearInterval(GEM_SCAN_POLL);
+      GEM_SCAN_POLL = null;
+      loadGems();
+      if (status.status === "paused_rate_limited") {
+        notify("Escaneo pausado: demasiados errores seguidos (limite de la fuente de datos).", "malo");
+      }
+    }
+  } catch (e) {
+    clearInterval(GEM_SCAN_POLL);
+    GEM_SCAN_POLL = null;
+    renderGemScanProgress(null);
+  }
+}
+
+async function startGemScan() {
+  try {
+    await api("app", "gems_scan_start", {});
+    if (!GEM_SCAN_POLL) GEM_SCAN_POLL = setInterval(pollGemScan, 2000);
+    pollGemScan();
+  } catch (e) {
+    notify(e.message, "malo");
+  }
+}
+
+async function cancelGemScan() {
+  try {
+    await api("app", "gems_scan_cancel", {});
+    notify("Cancelando escaneo…", "");
+  } catch (e) {
+    notify(e.message, "malo");
+  }
+}
+
 /* ------------------------------------------------------------ navegacion */
 
 function changeView(name) {
@@ -1420,6 +1716,7 @@ function changeView(name) {
   if (name === "cartera") { loadPortfolio(); loadProfile(); loadPendientes(); }
   if (name === "ayuda") loadHelp();
   if (name === "recomendaciones") loadRecommendations();
+  if (name === "gemas") loadGems();
 }
 
 /**
@@ -1537,6 +1834,18 @@ const HELP_CARD = {
         <li><b>Tus posiciones</b> — accion sugerida por posicion: mantener, ampliar, vigilar o vender.</li>
         <li><b>Ideas nuevas</b> — candidatos con nota 7+ que no tienes, marcando si diversifican sector.</li>
         <li><b>Una a una</b> — clic abre el detalle, con Anterior/Siguiente y el boton Atras del navegador.</li>
+      </ul>`,
+  },
+  gemas: {
+    titulo: "Hidden Gems",
+    contenido: `<p>Small/Mid Cap de todo el mundo, fuera del universo de Recomendaciones.
+      Cache local: la pestana abre al instante con lo ya puntuado.</p>
+      <ul>
+        <li><b>Gema</b> — nota final 7+, cobertura 50%+, sin alertas, 2+ trimestres con
+          datos, capitalizacion 300M-10.000M EUR, Valoracion en positivo.</li>
+        <li><b>Orden</b> — nota final, luego Valoracion, luego menos analistas (mas "oculta").</li>
+        <li><b>Escanear ahora</b> — hasta 300 candidatos en segundo plano, con progreso y
+          boton cancelar.</li>
       </ul>`,
   },
   cartera_vacio: {
@@ -1685,6 +1994,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-refrescar-cartera").addEventListener("click", () => loadPortfolio());
   document.getElementById("btn-actualizar-recomendaciones").addEventListener("click", () => loadRecommendations());
+  document.getElementById("btn-escanear-gemas").addEventListener("click", () => startGemScan());
+  document.getElementById("btn-cancelar-escaneo-gemas").addEventListener("click", () => cancelGemScan());
+  document.getElementById("form-gemas-filtros").addEventListener("change", (ev) => {
+    const f = formData(ev.currentTarget);
+    saveGemFilters({ region: f.region || "", sector: f.sector || "", minScore: f.minScore || "7" });
+    renderGemsList();
+  });
   document.getElementById("btn-exportar-json").addEventListener("click", () => exportar("json"));
   document.getElementById("btn-exportar-csv").addEventListener("click", () => exportar("csv"));
 
