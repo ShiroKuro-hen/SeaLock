@@ -17,6 +17,7 @@ import concurrent.futures
 import json
 import os
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -539,8 +540,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}/"
+    # Probe first: on Windows allow_reuse_address lets a second server bind the same
+    # port silently, so a failed bind can't be relied on to detect a running copy.
+    try:
+        socket.create_connection(("127.0.0.1", PORT), timeout=0.5).close()
+        running = True
+    except OSError:
+        running = False
+    if running:
+        # Already running (e.g. second double-click): just open the existing one.
+        print(f"\n  SeaLock is already running: {url}")
+        if os.environ.get("SEALOCK_NO_OPEN") != "1":
+            webbrowser.open(url)
+        sys.exit(0)
+
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"\n  SeaLock running:   {url}")
     print(f"  Database:          {fin.DB_PATH}")
     print("  Ctrl+C to stop.\n")

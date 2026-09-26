@@ -79,6 +79,17 @@ try:
                 sys.exit(1)
             time.sleep(0.25)
 
+    # --- arranque unico: un segundo SeaLock no pelea por el puerto ---
+    dup = subprocess.run(
+        [sys.executable, "-u", os.path.join(ROOT, "app", "servidor.py")],
+        capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=30,
+        env={**os.environ, "SEALOCK_DATA": TEST_DIR, "SEALOCK_PORT": str(PORT),
+             "SEALOCK_NO_OPEN": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+    check("segunda copia avisa y sale con codigo 0 sin arrancar otro servidor",
+          dup.returncode == 0 and "SeaLock is already running" in dup.stdout,
+          f"codigo={dup.returncode} salida={dup.stdout[:120]!r}")
+
     # --- pagina y token ---
     code, html = request("/")
     check("sirve la pagina principal", code == 200 and "SeaLock" in html)

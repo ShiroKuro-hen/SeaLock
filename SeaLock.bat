@@ -16,4 +16,4 @@ if "%PY%"=="" (
 )
 
 %PY% -u app\servidor.py
-pause
+if errorlevel 1 pause
