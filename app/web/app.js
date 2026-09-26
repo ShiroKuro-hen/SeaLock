@@ -479,6 +479,74 @@ async function search(query) {
   }
 }
 
+/* Noticias de la ficha (HU-05): endpoint aparte para que la ficha no las espere. Se
+ * guardan por ticker para que el auto-refresco de 60 s no parpadee; el servidor ya
+ * cachea 30 min. */
+let NEWS = { ticker: null, data: null, tab: "company" };
+
+async function loadNews(ticker) {
+  if (NEWS.ticker !== ticker) NEWS = { ticker, data: null, tab: "company" };
+  if (NEWS.data) { renderNews(); return; }
+  renderNews();
+  try {
+    const d = await api("app", "stock_news", { ticker });
+    if (NEWS.ticker !== ticker) return;
+    NEWS.data = d;
+  } catch (e) {
+    if (NEWS.ticker === ticker) NEWS.data = { error: e.message };
+  }
+  renderNews();
+}
+
+function relativeTime(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!(s >= 0)) return "";
+  if (s < 3600) return `hace ${Math.max(1, Math.round(s / 60))} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  return `hace ${Math.round(s / 86400)} d`;
+}
+
+function renderNews() {
+  const lista = document.getElementById("noticias-lista");
+  if (!lista) return;
+  document.querySelectorAll("[data-news-tab]").forEach((b) => {
+    b.classList.toggle("activa", b.dataset.newsTab === NEWS.tab);
+    b.setAttribute("aria-selected", b.dataset.newsTab === NEWS.tab);
+  });
+  const d = NEWS.data;
+  if (!d) { lista.innerHTML = '<div class="cargando">Cargando noticias…</div>'; return; }
+  const items = d[NEWS.tab] || [];
+  if (d.error || (!(d.company || []).length && !(d.sector || []).length)) {
+    lista.innerHTML = `<div class="vacio">No se pudieron cargar noticias.
+      <button type="button" class="mini" id="btn-reintentar-noticias">Reintentar</button></div>`;
+    document.getElementById("btn-reintentar-noticias").addEventListener("click", () => {
+      NEWS.data = null;
+      loadNews(NEWS.ticker);
+    });
+    return;
+  }
+  if (NEWS.tab === "sector" && !d.sector_query) {
+    lista.innerHTML = '<div class="vacio">Sin sector conocido para este valor (ETF o dato ausente), asi que no hay noticias de sector.</div>';
+    return;
+  }
+  if (!items.length) { lista.innerHTML = '<div class="vacio">Sin noticias recientes.</div>'; return; }
+  // Las noticias son dato, no instruccion: todo va por textContent, nunca innerHTML.
+  lista.replaceChildren(...items.map((n) => {
+    const caja = document.createElement("div");
+    caja.className = "noticia";
+    const a = document.createElement("a");
+    a.textContent = n.headline;
+    if (/^https?:\/\//i.test(n.link || "")) a.href = n.link;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = [n.source, n.published ? relativeTime(n.published) : n.date].filter(Boolean).join(" · ");
+    caja.append(a, meta);
+    return caja;
+  }));
+}
+
 async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null, refresh = false) {
   const cont = document.getElementById("ficha");
   CURRENT_STOCK = { ticker, assumptions };
@@ -603,12 +671,11 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
 
       <div class="caja">
         <h2>Noticias</h2>
-        ${Array.isArray(d.news) && d.news.length
-          ? d.news.map((n) => `<div class="noticia">
-              <a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.headline)}</a>
-              <div class="meta">${esc(n.source || "")} ${n.date ? `· ${esc(n.date)}` : ""}</div>
-            </div>`).join("")
-          : '<div class="vacio">Sin noticias recientes.</div>'}
+        <div class="subpestanas" role="tablist">
+          <button type="button" role="tab" data-news-tab="company">Empresa</button>
+          <button type="button" role="tab" data-news-tab="sector">Sector</button>
+        </div>
+        <div id="noticias-lista"><div class="cargando">Cargando noticias…</div></div>
       </div>
 
       <div class="caja">
@@ -623,6 +690,9 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       </div>`;
 
     cont.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
+    cont.querySelectorAll("[data-news-tab]").forEach((b) =>
+      b.addEventListener("click", () => { NEWS.tab = b.dataset.newsTab; renderNews(); }));
+    loadNews(ticker);
 
     const formAsk = document.getElementById("form-ask");
     document.getElementById("btn-copiar-prompt").addEventListener("click", async (ev) => {

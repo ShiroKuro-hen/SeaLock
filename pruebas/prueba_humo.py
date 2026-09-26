@@ -1112,6 +1112,26 @@ check("select_ideas ordena y filtra por la nota final, no por la mecanica",
           [{"ticker": "CCC", "score": 9, "final_score": 6.9, "coverage_pct": 90}], [], set())),
       str(ordered))
 
+# ------------------------------------------------------------------- noticias (HU-05)
+print("\n== noticias: news_dedupe y news_sorted (puras) ==")
+company = [{"headline": "Apple sube", "date": "Tue, 22 Sep 2026 08:00:00 GMT"},
+           {"headline": "APPLE SUBE", "date": "Tue, 22 Sep 2026 09:00:00 GMT"}]
+sector = [{"headline": "Apple sube", "date": ""},
+          {"headline": "Chips al alza", "date": "Wed, 23 Sep 2026 10:00:00 +0200"},
+          {"headline": "Sin fecha", "date": "basura"}]
+seen = set()
+c_news = mer.news_dedupe(company, seen)
+s_news = mer.news_dedupe(sector, seen)
+check("news_dedupe: quita repetidos y lo que ya salio en Empresa",
+      [n["headline"] for n in c_news] == ["Apple sube"]
+      and [n["headline"] for n in s_news] == ["Chips al alza", "Sin fecha"], str((c_news, s_news)))
+ordered = mer.news_sorted(company + sector[1:], limit=10)
+check("news_sorted: mas nueva primero en UTC, sin fecha al final",
+      [n["headline"] for n in ordered] == ["Chips al alza", "APPLE SUBE", "Apple sube", "Sin fecha"]
+      and ordered[0]["published"] == "2026-09-23T08:00:00+00:00" and ordered[-1]["published"] is None,
+      str([(n["headline"], n["published"]) for n in ordered]))
+check("news_sorted: respeta el limite", len(mer.news_sorted(company * 10, limit=10)) == 10)
+
 # ------------------------------------------------------------------- universo.json
 print("\n== recomendaciones: universo.json ==")
 

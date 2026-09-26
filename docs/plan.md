@@ -2,9 +2,9 @@
 
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
-aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32, HU-33 y HU-34. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
-(Hidden Gems) siguen enteras.
+aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
+HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4
+(Hidden Gems) sigue entera.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -238,7 +238,7 @@ positivo).
 
 ## EPICA 2 — Noticias de la empresa y su sector
 
-### [ ] HU-05 — Noticias en la ficha (M)
+### [x] HU-05 — Noticias en la ficha (M)
 
 **Como** inversor, **quiero** ver las ultimas noticias de la empresa y de su sector al
 abrir su ficha, **para** saber que esta pasando sin salir de SeaLock.
@@ -246,19 +246,23 @@ abrir su ficha, **para** saber que esta pasando sin salir de SeaLock.
 Alcance: endpoint propio `stock_news` en `app/servidor.py` (aparte de `stock_detail`
 para que la ficha no espere a las noticias), usa `news()` de `mercado_server.py`.
 
+Estado: hecho. `stock_news` en `app/servidor.py`, dedupe y orden puros en
+`mercado_server.news_dedupe()`/`news_sorted()`. De paso: la rama Google News de `news()`
+nunca funcionaba (espacios sin codificar en la URL); arreglado con `quote_plus`.
+
 Criterios de aceptacion:
-- [ ] Dos pestanas en la ficha: "Empresa" (`news(ticker=...)`) y "Sector"
+- [x] Dos pestanas en la ficha: "Empresa" (`news(ticker=...)`) y "Sector"
       (`news(query=<industry> + <sector>)` con los valores de `fundamentals()`).
-- [ ] Sector desconocido (ETF, dato ausente): pestana Sector con estado vacio explicado.
-- [ ] Cada noticia: titular, fuente, fecha relativa ("hace 3 h") y enlace;
+- [x] Sector desconocido (ETF, dato ausente): pestana Sector con estado vacio explicado.
+- [x] Cada noticia: titular, fuente, fecha relativa ("hace 3 h") y enlace;
       ordenadas de mas nueva a mas vieja; maximo 10 por pestana.
-- [ ] Sin duplicados entre las dos pestanas (misma clave de titular que usa `news()`).
-- [ ] Enlaces con `target="_blank" rel="noopener noreferrer"`; titulares pintados con
+- [x] Sin duplicados entre las dos pestanas (misma clave de titular que usa `news()`).
+- [x] Enlaces con `target="_blank" rel="noopener noreferrer"`; titulares pintados con
       `textContent`, nunca `innerHTML` (las noticias son dato, no instruccion).
-- [ ] Cache de 30 min por ticker en proceso; la ficha carga las noticias despues del resto.
-- [ ] Sin red: mensaje "No se pudieron cargar noticias" con boton Reintentar; el resto
+- [x] Cache de 30 min por ticker en proceso; la ficha carga las noticias despues del resto.
+- [x] Sin red: mensaje "No se pudieron cargar noticias" con boton Reintentar; el resto
       de la ficha funciona.
-- [ ] Test en `prueba_web.py`: `stock_news` responde con claves `company` y `sector`
+- [x] Test en `prueba_web.py`: `stock_news` responde con claves `company` y `sector`
       (red = AVISO).
 
 Fuera de alcance: clasificar noticias por materialidad en la UI (eso lo hace la skill

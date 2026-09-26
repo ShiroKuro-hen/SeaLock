@@ -10,6 +10,7 @@ Optional keys via environment variables (improve reliability if Yahoo fails):
 """
 
 import calendar
+import email.utils
 import http.cookiejar
 import json
 import math
@@ -773,6 +774,42 @@ def _rss(url, limit):
     return items
 
 
+def _news_key(article):
+    return article["headline"].lower()[:80]
+
+
+def news_dedupe(articles, seen=None):
+    """Drop repeated headlines, keeping the first. `seen` (a set of keys) is updated in
+    place, so a second list can be deduped against the first one."""
+    seen = set() if seen is None else seen
+    unique = []
+    for a in articles:
+        key = _news_key(a)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(a)
+    return unique
+
+
+def news_sorted(articles, limit=10):
+    """Newest first, with `published` as ISO 8601 (RSS pubDate is RFC 2822). Undated
+    items go last. Pure: no network."""
+    out = []
+    for a in articles:
+        try:
+            published = email.utils.parsedate_to_datetime(a.get("date") or "")
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+        except Exception:  # noqa: BLE001 - one malformed feed date must not drop the list
+            published = None
+        # UTC so the ISO strings sort correctly as text.
+        out.append({**a, "published": (published.astimezone(timezone.utc).isoformat()
+                                       if published else None)})
+    out.sort(key=lambda a: a["published"] or "", reverse=True)
+    return out[: int(limit)]
+
+
 @srv.tool(
     "news",
     "Recent news about a stock or topic, combining Yahoo Finance and Google News. "
@@ -805,18 +842,13 @@ def news(ticker=None, query=None, language="es", limit=15):
     else:
         suffix = "hl=en-US&gl=US&ceid=US:en"
     articles += _rss(
-        f"https://news.google.com/rss/search?q={urllib.parse.quote(term)}+"
-        f"{'accion OR bolsa OR resultados' if language == 'es' else 'stock OR earnings'}&{suffix}",
+        "https://news.google.com/rss/search?q=" + urllib.parse.quote_plus(
+            f"{term} {'accion OR bolsa OR resultados' if language == 'es' else 'stock OR earnings'}"
+        ) + f"&{suffix}",
         limit,
     )
 
-    seen, unique = set(), []
-    for a in articles:
-        key = a["headline"].lower()[:80]
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(a)
+    unique = news_dedupe(articles)
 
     return {
         "query": {"ticker": ticker, "text": query, "language": language},

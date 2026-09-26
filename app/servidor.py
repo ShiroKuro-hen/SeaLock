@@ -222,7 +222,8 @@ def _position_snapshot(ticker, holding, quote_data):
 
 def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=2.5,
                  latest_quarter_end=None, refresh=False):
-    """Quote + fundamentals + history + valuation + news + score for a single security.
+    """Quote + fundamentals + history + valuation + score for a single security. News
+    lives apart in stock_news() so the ficha doesn't wait for the RSS feeds.
 
     `refresh=true` forces a refetch of the cached inputs (at most one per minute).
     `latest_quarter_end` (AAAA-MM-DD) is the newest quarterly close the caller knows about;
@@ -239,7 +240,7 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
 
     # Price, fundamentals and the score's inputs come from the 6h cache so the 60s
     # auto-refresh doesn't hit Yahoo on every tick; "Actualizar nota" (refresh=true)
-    # forces a refetch at most once a minute. News and the DCF, which follow the
+    # forces a refetch at most once a minute. The DCF and Graham, which follow the
     # assumptions or are cheap, stay per call.
     raw = _raw_inputs(ticker, refresh=refresh)
     for key in ("quote", "fundamentals", "historical", "quarterly", "estimates"):
@@ -249,7 +250,6 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
         output[key] = section or {}
     output["score_age_seconds"] = _inputs_age(ticker)
 
-    try_section("news", lambda: mer.news(ticker=ticker, limit=8)["news"])
     try_section("dcf", lambda: mer.dcf_valuation(
         ticker=ticker,
         growth_pct=growth_pct,
@@ -279,6 +279,45 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
         quarterly=clean("quarterly") or {}, estimates=clean("estimates") or {},
     ), latest_quarter_end or (quarters[0].get("period_end") if quarters else None))
     return output
+
+
+NEWS_CACHE_TTL = 30 * 60  # seconds
+_news_cache = {}  # ticker -> (timestamp, stock_news() result)
+
+
+def stock_news(ticker):
+    """Latest news for the company and for its industry/sector, cached 30 min per ticker.
+    Sector headlines already in the company list are dropped. The sector query comes from
+    the cached fundamentals, so this adds no Yahoo call when the ficha is already open."""
+    tkr = ticker.upper().strip()
+    hit = _news_cache.get(tkr)
+    if hit and time.time() - hit[0] < NEWS_CACHE_TTL:
+        return hit[1]
+
+    f = _raw_inputs(tkr).get("fundamentals") or {}
+    sector_query = " ".join(x for x in (f.get("industry"), f.get("sector")) if x) or None
+    seen = set()
+    company = mer.news_dedupe(mer.news(ticker=tkr, limit=15)["news"], seen)
+    sector = (mer.news_dedupe(mer.news(query=sector_query, limit=15)["news"], seen)
+              if sector_query else [])
+    result = {
+        "ticker": tkr,
+        "company": mer.news_sorted(company),
+        "sector": mer.news_sorted(sector),
+        "sector_query": sector_query,
+    }
+    # An empty result is usually a network failure: don't pin it for 30 min.
+    if company or sector:
+        _news_cache[tkr] = (time.time(), result)
+    return result
+
+
+def _with_news(detail):
+    """stock_detail plus company headlines, for the Claude context and the copied prompt."""
+    try:
+        return {**detail, "news": stock_news(detail["ticker"])["company"]}
+    except Exception:  # noqa: BLE001 - the context just goes without news
+        return detail
 
 
 _raw_cache = {}  # ticker -> (timestamp, {"quote", "fundamentals", "historical", "dcf", "graham", "quarterly"})
@@ -496,7 +535,7 @@ def export_all():
 def build_prompt(ticker):
     """Text to copy into any AI: the ticker's numbers with URLs, the investor profile and
     the whole portfolio. Stays on this machine until the user pastes it somewhere."""
-    detail = stock_detail(ticker)
+    detail = _with_news(stock_detail(ticker))
     valued = portfolio_valued()
     positions = valued.get("positions") or []
     # The valued position is the complete one (weight, cost currency); stock_detail's
@@ -513,7 +552,7 @@ def build_prompt(ticker):
 def ask(ticker, question, include_position=False, web_search=True):
     """One question to Claude, with this ticker's numbers as context. Network only here,
     and only when the user presses the button: see app/llm.py for the privacy boundary."""
-    detail = stock_detail(ticker, latest_quarter_end=None)
+    detail = _with_news(stock_detail(ticker, latest_quarter_end=None))
     return llm.ask(ticker, question, detail, include_position=include_position,
                    web_search=web_search)
 
@@ -539,6 +578,7 @@ API["app"] = {
     "portfolio_valued": portfolio_valued,
     "portfolio_scores": portfolio_scores,
     "stock_detail": stock_detail,
+    "stock_news": stock_news,
     "recommendation_universe": recommendation_universe,
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,

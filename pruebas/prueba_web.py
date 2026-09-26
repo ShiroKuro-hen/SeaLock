@@ -236,6 +236,15 @@ try:
           code == 200 and len(r["data"]["positions"]) == 1
           and "action_key" in r["data"]["positions"][0]["advice"], str(r)[:200], critical=False)
 
+    code, r = call("/api/app/stock_news", {"ticker": "AAPL"})
+    check("stock_news responde con company y sector aparte de la ficha",
+          code == 200 and "company" in r["data"] and "sector" in r["data"], str(r)[:200])
+    check("stock_news trae noticias de empresa y sector (red)",
+          bool(r["data"].get("company")) and bool(r["data"].get("sector")),
+          str(r)[:200], critical=False)
+    code, r = call("/api/app/stock_detail", {"ticker": "AAPL"})
+    check("stock_detail ya no espera a las noticias", "news" not in r["data"], str(list(r["data"]))[:200])
+
     code, _ = request("/api/app/recommendation_universe", {})
     check("recommendation_universe rechaza llamada sin token", code == 403, f"codigo={code}")
 

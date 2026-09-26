@@ -221,7 +221,7 @@ a [1, 10], y el tope de 3 por `red_flags` se aplica **despues** del ajuste. Una 
 
 `app/servidor.py` no duplica logica: importa modulos MCP, llama funciones. Herramienta nueva MCP = API web automatica. Grupos de la API: `finance`, `market`, `app` (`/api/<grupo>/<tool>`).
 
-Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones).
+Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `stock_news` (noticias de empresa y de su sector, aparte para que la ficha no las espere; cache 30 min), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones).
 
 export_all devuelve `{trades, watchlist, reviews}` como filas crudas para la descarga CSV/JSON de la pestana Cartera (HU-28). El armado del fichero va en el navegador: nada sale a la red.
 
@@ -231,7 +231,8 @@ Cache compartida de inputs de mercado (`_raw_inputs`, 6h en proceso, por ticker)
 a Yahoo, y devuelve `score_age_seconds` para que la UI diga "Nota calculada hace X".
 `refresh: true` la invalida, con un enfriamiento de 60 s por ticker
 (`FORCED_REFRESH_COOLDOWN`, con mando `SEALOCK_REFRESH_COOLDOWN` solo para los tests).
-Noticias, DCF y Graham se piden por llamada: siguen los supuestos o son baratas.
+DCF y Graham se piden por llamada: siguen los supuestos o son baratas. Las noticias van
+por `stock_news`; `ask` y `build_prompt` las anaden al contexto con `_with_news()`.
 
 Defensas (importa local — cualquier web en otra pestana pide a localhost):
 

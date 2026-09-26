@@ -639,3 +639,11 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--acento
   margin-bottom: 14px;
   font-size: 13px;
 }
+
+/* Pestanas internas de una caja (Noticias: Empresa / Sector). */
+.subpestanas { display: flex; gap: 4px; margin-bottom: 8px; }
+.subpestanas button {
+  background: none; border: 1px solid var(--borde); border-radius: 8px;
+  padding: 4px 12px; cursor: pointer; color: var(--texto-tenue);
+}
+.subpestanas button.activa { background: var(--acento); border-color: var(--acento); color: #fff; }
