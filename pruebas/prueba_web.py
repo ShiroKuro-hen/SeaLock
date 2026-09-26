@@ -231,6 +231,14 @@ try:
     check("stock_scores puntua un ticker (red)",
           code == 200 and "AAPL" in r["data"]["scores"], str(r)[:200], critical=False)
 
+    # --- comparador de acciones (HU-30) ---
+    code, r = call("/api/app/stock_compare", {"tickers": ["AAPL"]})
+    check("stock_compare con 1 ticker rechaza (necesita 2-4)", code == 400, str(r)[:200])
+
+    code, r = call("/api/app/stock_compare", {"tickers": ["AAPL", "MSFT"]})
+    check("stock_compare con 2 tickers devuelve 2 filas (red)",
+          code == 200 and len(r["data"]["rows"]) == 2, str(r)[:200], critical=False)
+
     code, r = call("/api/app/recommendation_positions", {})
     check("recommendation_positions devuelve una fila con accion sugerida (red)",
           code == 200 and len(r["data"]["positions"]) == 1

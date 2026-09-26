@@ -586,7 +586,35 @@ label.check input { width: auto; margin: 0; }
 
 /* Foco visible generico: cubre tambien filas/tarjetas de Recomendaciones,
    alcanzables por teclado via tabindex. */
-button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:disabled:hover { border-color: var(--borde); color: inherit; }
+
+/* --- HU-17: movil --- */
+@media (max-width: 600px) {
+  main { padding: 14px; }
+  .pestanas { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pestana { flex-shrink: 0; }
+}
+
+@media (pointer: coarse) {
+  button, .pestana, button.mini { min-height: 44px; }
+}
+
+/* --- HU-21: modal de confirmacion --- */
+dialog.dialogo-confirmar {
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo-caja);
+  color: var(--texto);
+  padding: 18px 20px;
+  max-width: 380px;
+  box-shadow: var(--sombra-hover);
+}
+dialog.dialogo-confirmar::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.dialogo-confirmar p { margin: 0 0 16px; }
+dialog.dialogo-confirmar .acciones-caja { justify-content: flex-end; margin-top: 0; }
 
 /* --- recomendaciones --- */
 .rec-fila { cursor: pointer; }

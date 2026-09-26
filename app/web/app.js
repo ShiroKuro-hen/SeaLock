@@ -120,6 +120,53 @@ function notify(texto, clase = "") {
   el._t = setTimeout(() => (el.className = "aviso"), 3600);
 }
 
+/* ------------------------------------------------------- modal de confirmacion */
+
+/** Reemplaza confirm() del navegador: HU-21, "borrados con confirmacion, mostrando
+ *  registro afectado antes". El <dialog> nativo da foco atrapado y ESC gratis; al
+ *  cerrar, el foco vuelve a quien abrio el dialogo. Devuelve una promesa true/false. */
+function confirmDialog(message, confirmLabel = "Eliminar") {
+  return new Promise((resolve) => {
+    const previouslyFocused = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "dialogo-confirmar";
+
+    const p = document.createElement("p");
+    p.textContent = message;
+
+    const acciones = document.createElement("div");
+    acciones.className = "acciones-caja";
+    const btnCancelar = document.createElement("button");
+    btnCancelar.type = "button";
+    btnCancelar.textContent = "Cancelar";
+    const btnConfirmar = document.createElement("button");
+    btnConfirmar.type = "button";
+    btnConfirmar.className = "peligro";
+    btnConfirmar.textContent = confirmLabel;
+    acciones.append(btnCancelar, btnConfirmar);
+    dialog.append(p, acciones);
+    document.body.appendChild(dialog);
+
+    let resolved = false;
+    const finish = (result) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(result);
+      dialog.close();
+    };
+    btnCancelar.addEventListener("click", () => finish(false));
+    btnConfirmar.addEventListener("click", () => finish(true));
+    dialog.addEventListener("cancel", () => finish(false)); // ESC nativo del <dialog>
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
+    });
+
+    dialog.showModal();
+    btnCancelar.focus();
+  });
+}
+
 /* ----------------------------------------------------------- glosario popover */
 
 let _popoverEl = null;
@@ -240,8 +287,11 @@ function loading(id) {
   document.getElementById(id).innerHTML = '<div class="cargando">Cargando…</div>';
 }
 
-function renderError(id, e) {
-  document.getElementById(id).innerHTML = `<div class="error">${esc(e.message || e)}</div>`;
+function renderError(id, e, retry) {
+  const boton = retry ? ` <button type="button" class="mini" data-reintentar>Reintentar</button>` : "";
+  const cont = document.getElementById(id);
+  cont.innerHTML = `<div class="error">${esc(e.message || e)}${boton}</div>`;
+  if (retry) cont.querySelector("[data-reintentar]").addEventListener("click", retry);
 }
 
 /* ------------------------------------------------------------- perfil inversor */
@@ -358,7 +408,7 @@ async function loadPortfolio(silencioso = false) {
     if (d.positions.length) loadPortfolioScores();
   } catch (e) {
     if (silencioso) notify(`No se pudo actualizar la cartera: ${e.message}`, "malo");
-    else renderError("tabla-cartera", e);
+    else renderError("tabla-cartera", e, () => loadPortfolio());
   }
   if (!silencioso) loadWatchlist();
 }
@@ -433,15 +483,20 @@ async function loadWatchlist() {
           </tbody></table></div>`
       : '<div class="vacio">Sin valores en seguimiento.</div>';
 
-    document.querySelectorAll("[data-quitar]").forEach((b) =>
+    document.querySelectorAll("[data-quitar]").forEach((b) => {
+      const w = d.watchlist.find((x) => x.ticker === b.dataset.quitar);
       b.addEventListener("click", async () => {
-        await api("finance", "watchlist_remove", { ticker: b.dataset.quitar });
+        const ok = await confirmDialog(
+          `¿Quitar ${w.ticker}${w.name ? ` (${w.name})` : ""} de seguimiento? Se perdera la tesis y el objetivo guardados.`);
+        if (!ok) return;
+        await api("finance", "watchlist_remove", { ticker: w.ticker });
         loadWatchlist();
-      }));
+      });
+    });
     document.querySelectorAll("[data-ver]").forEach((b) =>
       b.addEventListener("click", () => { changeView("acciones"); viewStock(b.dataset.ver); }));
   } catch (e) {
-    renderError("tabla-watchlist", e);
+    renderError("tabla-watchlist", e, () => loadWatchlist());
   }
 }
 
@@ -475,7 +530,7 @@ async function search(query) {
     document.querySelectorAll("[data-ficha]").forEach((b) =>
       b.addEventListener("click", () => viewStock(b.dataset.ficha)));
   } catch (e) {
-    renderError("resultados-busqueda", e);
+    renderError("resultados-busqueda", e, () => search(query));
   }
 }
 
@@ -765,7 +820,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
     });
   } catch (e) {
     if (silencioso) notify(`No se pudo actualizar ${ticker}: ${e.message}`, "malo");
-    else renderError("ficha", e);
+    else renderError("ficha", e, () => viewStock(ticker, assumptions, false, fromRec));
   }
 }
 
@@ -1034,6 +1089,66 @@ function renderValuation(d, cot) {
   return html || '<div class="vacio">Sin datos suficientes para valorar.</div>';
 }
 
+/* ------------------------------------------------------------- comparador */
+
+/** HU-30: tabla lado a lado de 2-4 tickers. Reutiliza stock_compare (mismos datos
+ *  y motor de nota que la ficha); las etiquetas de fila reusan claves ya existentes
+ *  en glosario.js (PER, EV/EBITDA, Margen neto, ROE, Dividendo, Nota, pilares). */
+async function compararAcciones(tickersText) {
+  loading("tabla-comparar");
+  const tickers = String(tickersText || "").split(",").map((t) => t.trim()).filter(Boolean);
+  try {
+    const d = await api("app", "stock_compare", { tickers });
+    renderComparar(d.rows);
+  } catch (e) {
+    renderError("tabla-comparar", e, () => compararAcciones(tickersText));
+  }
+}
+
+function renderComparar(rows) {
+  const cont = document.getElementById("tabla-comparar");
+  if (!rows || !rows.length) { cont.innerHTML = '<div class="vacio">Sin datos.</div>'; return; }
+
+  const filas = [
+    { label: "Nota", glos: "Nota", fmt: (r) => `<span class="${r.sentiment || ""}">${number(r.final_score, 1)}/10</span> <span class="tenue">(mecanica ${number(r.score, 1)})</span>` },
+    { label: "Precio", fmt: (r) => money(r.price) },
+    { label: "PER", glos: "PER", fmt: (r) => number(r.per_trailing, 1) },
+    { label: "EV/EBITDA", glos: "EV/EBITDA", fmt: (r) => number(r.ev_ebitda, 1) },
+    { label: "ROE", glos: "ROE", fmt: (r) => (r.roe_pct != null ? `${number(r.roe_pct, 1)} %` : "—") },
+    { label: "Margen neto", glos: "Margen neto", fmt: (r) => (r.net_margin_pct != null ? `${number(r.net_margin_pct, 1)} %` : "—") },
+    { label: "Crecim. ventas", fmt: (r) => (r.revenue_growth_pct != null ? pct(r.revenue_growth_pct) : "—") },
+    { label: "Dividendo", glos: "Dividendo", fmt: (r) => (r.dividend_yield_pct != null ? `${number(r.dividend_yield_pct, 2)} %` : "—") },
+    { label: "Ventas trim. interanual", fmt: (r) => (r.quarter_revenue_yoy_pct != null ? pct(r.quarter_revenue_yoy_pct) : "—") },
+    { label: "Margen trim.", fmt: (r) => (r.quarter_net_margin_pct != null ? `${number(r.quarter_net_margin_pct, 1)} %` : "—") },
+  ];
+  const pillarNames = [...new Set(rows.flatMap((r) => (r.pillars || []).map((p) => p.name_es)))];
+
+  let html = `<div class="tabla-scroll"><table><thead><tr><th></th>${
+    rows.map((r) => `<th>${esc(r.ticker)}${r.name ? `<div class="tenue" style="font-size:11px;font-weight:400">${esc(r.name)}</div>` : ""}</th>`).join("")
+  }</tr></thead><tbody>`;
+  filas.forEach((m) => {
+    html += `<tr><th${m.glos ? ` data-glosario="${esc(m.glos)}"` : ""}>${esc(m.label)}</th>${
+      rows.map((r) => `<td class="num">${r.error ? "—" : m.fmt(r)}</td>`).join("")
+    }</tr>`;
+  });
+  pillarNames.forEach((name) => {
+    html += `<tr><th data-glosario="${esc(name)}">${esc(name)}</th>${
+      rows.map((r) => {
+        if (r.error) return `<td class="num">—</td>`;
+        const p = (r.pillars || []).find((x) => x.name_es === name);
+        return `<td class="num">${p && p.subscore !== null ? number(p.subscore, 2) : "—"}</td>`;
+      }).join("")
+    }</tr>`;
+  });
+  html += `</tbody></table></div>`;
+  const errores = rows.filter((r) => r.error);
+  if (errores.length) {
+    html += `<div class="nota">${esc(errores.map((r) => `${r.ticker}: ${r.error}`).join("; "))}</div>`;
+  }
+  cont.innerHTML = html;
+  cont.querySelectorAll("[data-glosario]").forEach(makeFocusable);
+}
+
 /* ---------------------------------------------------- RECOMENDACIONES */
 
 const TRAD_RIESGO = { conservative: "Conservador", moderate: "Moderado", aggressive: "Agresivo" };
@@ -1242,7 +1357,7 @@ async function loadRecommendations() {
     REC_POSITIONS = pos.positions;
   } catch (e) {
     REC_POSITIONS = [];
-    renderError("rec-posiciones", e);
+    renderError("rec-posiciones", e, () => loadRecommendations());
   }
   REC_SCORES = {};
   REC_IDEAS = [];
@@ -1258,7 +1373,7 @@ async function loadRecommendations() {
     universe = await api("app", "recommendation_universe");
   } catch (e) {
     REC_LOADING = false;
-    renderError("rec-ideas", e);
+    renderError("rec-ideas", e, () => loadRecommendations());
     return;
   }
   document.getElementById("rec-fuente").innerHTML =
@@ -1560,6 +1675,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("form-buscar").addEventListener("submit", (ev) => {
     ev.preventDefault();
     search(new FormData(ev.target).get("query"));
+  });
+
+  document.getElementById("form-comparar").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    compararAcciones(new FormData(ev.target).get("tickers"));
   });
 
   document.getElementById("btn-refrescar-cartera").addEventListener("click", () => loadPortfolio());

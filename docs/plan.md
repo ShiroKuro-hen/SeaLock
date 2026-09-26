@@ -3,8 +3,8 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4
-(Hidden Gems) sigue entera.
+HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-17, HU-18, HU-20, HU-21, HU-28, HU-30,
+HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4 (Hidden Gems) sigue entera.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -553,24 +553,45 @@ Criterios de aceptacion:
 - [ ] Sparkline de precio a 1 ano en la ficha y en las tarjetas de gemas.
 - [ ] Todo SVG inline, sin librerias; cada grafico tiene texto alternativo con los valores.
 
-### [ ] HU-17 — Movil (S) — antes D3a
-- [ ] Pestanas con scroll horizontal; ningun formulario ni tabla desborda a 360 px de ancho.
-- [ ] Zonas tactiles >= 44 px.
+### [x] HU-17 — Movil (S) — antes D3a
+- [x] Pestanas con scroll horizontal; ningun formulario ni tabla desborda a 360 px de ancho.
+- [x] Zonas tactiles >= 44 px.
 
-### [ ] HU-18 — Foco y estados deshabilitados (S) — antes D3b
-- [ ] `:focus-visible` visible en botones, enlaces, pestanas y tarjetas.
-- [ ] Estados `disabled` visibles y no clicables mientras una accion esta en curso.
-- [ ] Todo accionable por teclado (Tab, Enter, Espacio, ESC en popups).
+Estado: hecho. `.pestanas` con `overflow-x: auto` bajo 600px; todas las tablas ya
+vivian en `.tabla-scroll` salvo la de "Fuentes de datos" en Ayuda, envuelta ahora.
+`@media (pointer: coarse)` sube `min-height` a 44px en botones, `.pestana` y `.mini`.
+
+### [x] HU-18 — Foco y estados deshabilitados (S) — antes D3b
+- [x] `:focus-visible` visible en botones, enlaces, pestanas y tarjetas.
+- [x] Estados `disabled` visibles y no clicables mientras una accion esta en curso.
+- [x] Todo accionable por teclado (Tab, Enter, Espacio, ESC en popups).
+
+Estado: hecho. La regla generica `button:focus-visible, [tabindex]:focus-visible` de
+`estilo.css` ya cubria pestanas, `.mini`, tarjetas/filas de Recomendaciones (con
+`tabindex=0` y su propio manejador de teclado); se amplio a `a:focus-visible`. Se anadio
+`button:disabled { opacity:.5; cursor:not-allowed }`. El popover de glosario y la
+tarjeta de ayuda ya cerraban con ESC (comprobado, sin cambios).
 
 ### [ ] HU-19 — Esqueletos de carga (S) — antes D3c
 - [ ] Toda caja que hoy dice "Cargando..." muestra un esqueleto con la forma del contenido.
 
-### [ ] HU-20 — Reintentar en errores (S) — antes D3d
-- [ ] Todo estado de error tiene boton "Reintentar" que repite solo esa carga.
+### [x] HU-20 — Reintentar en errores (S) — antes D3d
+- [x] Todo estado de error tiene boton "Reintentar" que repite solo esa carga.
 
-### [ ] HU-21 — Modal de confirmacion propio (S) — antes D3e
-- [ ] `confirm()` del navegador sustituido por un modal con el registro afectado,
+Estado: hecho. `renderError(id, e, retry)` acepta una funcion opcional y pinta un
+boton "Reintentar" dentro de la caja de error, siempre escapado con `esc()`. Todas
+las llamadas (cartera, watchlist, busqueda, ficha, recomendaciones) pasan la funcion
+que repite solo esa carga.
+
+### [x] HU-21 — Modal de confirmacion propio (S) — antes D3e
+- [x] `confirm()` del navegador sustituido por un modal con el registro afectado,
       foco atrapado, ESC cancela, foco devuelto al boton de origen.
+
+Estado: hecho. `confirmDialog(mensaje)` en `app.js`, sobre `<dialog>` nativo
+(`showModal()`): foco atrapado y ESC (evento `cancel`) gratis del navegador; al
+cerrar, devuelve el foco a quien abrio el dialogo. Unico borrado destructivo en la UI
+era "Quitar" de seguimiento (`watchlist_remove`); ahora pide confirmacion mostrando
+ticker y nombre. Estilos en `estilo.css` con las variables `--fondo-caja`/`--borde`.
 
 ---
 
@@ -682,9 +703,18 @@ en un texto, **para** pegarlo en cualquier IA y que me lo analice con mi context
 Nota: las proyecciones tambien entran en la caja de preguntar a Claude (faltaban en
 HU-32, corregido aqui).
 
-### [ ] HU-30 — Comparador de acciones (M)
+### [x] HU-30 — Comparador de acciones (M)
 **Como** inversor, **quiero** comparar varias acciones lado a lado, **para** elegir entre ellas.
-- [ ] Tabla con fundamentales, pilares, trimestres (HU-01) y nota final (HU-08) de 2-4 tickers.
+- [x] Tabla con fundamentales, pilares, trimestres (HU-01) y nota final (HU-08) de 2-4 tickers.
+
+Estado: hecho. `stock_compare(tickers)` en `app/servidor.py`: acepta lista o texto
+separado por comas, exige 2-4 tickers, puntua en paralelo con `_score_many` y anade
+desde `_raw_inputs` el subconjunto de fundamentales (PER, EV/EBITDA, ROE, margen
+neto, crecimiento de ventas, dividendo) y el ultimo trimestre (ventas y margen
+interanual). Fallos por ticker vuelven como `{"ticker","error"}` sin tumbar el lote.
+Caja "Comparar acciones" en Acciones (`index.html`/`app.js`, `renderComparar`), con
+las mismas etiquetas de fila que la ficha para no necesitar entradas nuevas de
+glosario. Test en `prueba_web.py`: 1 ticker rechaza, 2 tickers devuelven 2 filas.
 
 ### [x] HU-32 — Preguntar a Claude desde la ficha, con busqueda web (M)
 **Como** inversor, **quiero** preguntar sobre un valor desde la ficha, con los numeros de

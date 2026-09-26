@@ -523,6 +523,59 @@ def recommendation_positions():
     return {"positions": out, "profile": profile}
 
 
+def stock_compare(tickers):
+    """Side-by-side comparison of 2-4 tickers: fundamentals, pillar subscores, latest
+    quarter and final score. Reuses the same cached inputs and scoring as everywhere
+    else; a per-ticker failure never fails the whole batch."""
+    if isinstance(tickers, str):
+        tickers = tickers.split(",")
+    tickers = list(dict.fromkeys(t.upper().strip() for t in (tickers or []) if t and t.strip()))
+    if len(tickers) < 2:
+        raise ValueError("Compare needs at least 2 tickers")
+    if len(tickers) > 4:
+        raise ValueError("Compare accepts at most 4 tickers")
+
+    profile = fin.profile_get()
+    try:
+        holdings = {p["ticker"]: p for p in fin.portfolio_view()["positions"]}
+    except Exception:  # noqa: BLE001 - comparison still works without holding context
+        holdings = {}
+    scores = _score_many(tickers, profile, holdings)
+
+    rows = []
+    for ticker in tickers:
+        s = scores.get(ticker) or {}
+        if s.get("error"):
+            rows.append({"ticker": ticker, "error": s["error"]})
+            continue
+        raw = _raw_inputs(ticker)
+        fundamentals = raw.get("fundamentals") or {}
+        valuation = fundamentals.get("valuation") or {}
+        profitability = fundamentals.get("profitability") or {}
+        growth = fundamentals.get("growth") or {}
+        quarters = (raw.get("quarterly") or {}).get("quarters") or []
+        latest_q = quarters[0] if quarters else {}
+        rows.append({
+            "ticker": ticker,
+            "name": s.get("name") or fundamentals.get("name"),
+            "score": s.get("score"),
+            "final_score": s.get("final_score"),
+            "label": s.get("label"),
+            "sentiment": s.get("sentiment"),
+            "pillars": s.get("pillars"),
+            "price": (raw.get("quote") or {}).get("price"),
+            "per_trailing": valuation.get("per_trailing"),
+            "ev_ebitda": valuation.get("ev_ebitda"),
+            "roe_pct": profitability.get("roe_pct"),
+            "net_margin_pct": profitability.get("net_margin_pct"),
+            "revenue_growth_pct": growth.get("revenue_yoy_pct"),
+            "dividend_yield_pct": (fundamentals.get("dividend") or {}).get("yield_pct"),
+            "quarter_revenue_yoy_pct": latest_q.get("revenue_yoy_pct"),
+            "quarter_net_margin_pct": latest_q.get("net_margin_pct"),
+        })
+    return {"rows": rows}
+
+
 def export_all():
     """Everything the user owns, as plain rows: local backup to CSV/JSON, no network."""
     return {
@@ -582,6 +635,7 @@ API["app"] = {
     "recommendation_universe": recommendation_universe,
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
+    "stock_compare": stock_compare,
     "export_all": export_all,
     "ask": ask,
     "build_prompt": build_prompt,

@@ -221,7 +221,7 @@ a [1, 10], y el tope de 3 por `red_flags` se aplica **despues** del ajuste. Una 
 
 `app/servidor.py` no duplica logica: importa modulos MCP, llama funciones. Herramienta nueva MCP = API web automatica. Grupos de la API: `finance`, `market`, `app` (`/api/<grupo>/<tool>`).
 
-Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `stock_news` (noticias de empresa y de su sector, aparte para que la ficha no las espere; cache 30 min), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones).
+Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `stock_news` (noticias de empresa y de su sector, aparte para que la ficha no las espere; cache 30 min), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones), y `stock_compare` (comparador de 2-4 tickers, ver § Comparador de acciones).
 
 export_all devuelve `{trades, watchlist, reviews}` como filas crudas para la descarga CSV/JSON de la pestana Cartera (HU-28). El armado del fichero va en el navegador: nada sale a la red.
 
@@ -286,6 +286,18 @@ nuevas, sobre un universo de blue chips verificado, no sobre chivatazos.
   (posiciones primero, luego ideas) — el boton Atras del navegador funciona sin
   codigo extra. "Ver ficha completa" abre la ficha de Acciones y anade un boton
   "Volver a recomendaciones" que reabre el mismo indice.
+
+### Comparador de acciones
+
+Caja "Comparar acciones" en la pestana Acciones (HU-30): de 2 a 4 tickers separados
+por comas. `stock_compare(tickers)` (`app/servidor.py`) valida el rango, puntua en
+paralelo con `_score_many` (igual que Recomendaciones) y anade, desde la misma
+cache de `_raw_inputs`, el subconjunto de fundamentales (PER, EV/EBITDA, ROE, margen
+neto, crecimiento de ventas, dividendo) y el ultimo trimestre (ventas y margen
+interanual). Fallos por ticker vuelven como `{"ticker","error"}`, sin tumbar el lote.
+La tabla en `app.js` (`renderComparar`) reutiliza las mismas etiquetas de fila que la
+ficha (PER, EV/EBITDA, Margen neto, ROE, Dividendo, Nota, nombres de pilar), asi que
+no hace falta anadir entradas nuevas al glosario.
 
 ### Glosario con rangos
 

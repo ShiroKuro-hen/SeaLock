@@ -141,6 +141,15 @@
     </form>
     <div id="resultados-busqueda"></div>
   </div>
+  <div class="caja">
+    <div class="cabecera-caja"><h2>Comparar acciones</h2></div>
+    <p class="ayuda">De 2 a 4 tickers, separados por comas.</p>
+    <form id="form-comparar" class="form-linea">
+      <input name="tickers" placeholder="AAPL, MSFT, ITX.MC" required style="flex:1">
+      <button type="submit" class="principal">Comparar</button>
+    </form>
+    <div id="tabla-comparar"></div>
+  </div>
   <div id="ficha"></div>
 </section>
 
@@ -188,6 +197,7 @@
       <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, caida maxima, RSI, medias moviles.</li>
       <li><b>Valor intrinseco</b> — DCF con tabla de sensibilidad + formulas de Graham.</li>
       <li><b>Estado de mercado</b> — badge ABIERTO/CERRADO/PREAPERTURA/POSTCIERRE. Mercado cerrado = ultimo cierre.</li>
+      <li><b>Comparar acciones</b> — tabla lado a lado de 2 a 4 tickers, con fundamentales, pilares y nota final.</li>
     </ul>
   </div>
 
@@ -241,7 +251,7 @@
 
   <div class="caja" data-section="datos">
     <h2>Fuentes de datos</h2>
-    <table>
+    <div class="tabla-scroll"><table>
       <thead><tr><th>Dato</th><th>Fuente</th><th>Fiabilidad</th></tr></thead>
       <tbody>
         <tr><td>Precio e historico</td><td>Yahoo chart v8, respaldo Stooq</td><td>Alta</td></tr>
@@ -252,7 +262,7 @@
         <tr><td>Trimestres fiscales</td><td>Yahoo fundamentals-timeseries v1</td><td>Alta en EE.UU., parcial en Europa</td></tr>
         <tr><td>Valoracion</td><td>Calculo local</td><td>Sin red</td></tr>
       </tbody>
-    </table>
+    </table></div>
     <p>Precios diferidos ~15 min en horario de mercado. Fundamentales europeos pueden faltar (capitalizacion, FCF),
     y los trimestres llegan a veces sin flujo de caja: la ficha lo avisa y el pilar se calcula con lo que hay.</p>
   </div>
