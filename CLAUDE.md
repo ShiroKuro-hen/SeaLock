@@ -19,13 +19,15 @@ SeaLock/
 │  ├─ mcp_common.py           Framework MCP sobre stdio (sin dependencias)
 │  ├─ finanzas_server.py      SQLite local: cartera (trades), watchlist, perfil inversor
 │  ├─ mercado_server.py       Cotizaciones, fundamentales, noticias, valoracion y nota
-│  └─ scoring.py              Motor puro de la nota 1-10 (sin red, sin I/O)
+│  ├─ scoring.py              Motor puro de la nota 1-10 (sin red, sin I/O)
+│  └─ symbols.py              Catalogo local de simbolos: busqueda sin red, ISIN, OTC
 ├─ app/
 │  ├─ servidor.py             HTTP local + API JSON sobre las mismas funciones
 │  └─ web/                    index.html, estilo.css, app.js (sin frameworks)
 ├─ recursos/
 │  └─ universo.json           Universo de candidatos para Recomendaciones (Dow Jones + EURO STOXX 50 + IBEX 35)
 │  └─ sealock.ico             Icono del acceso directo del escritorio, en la paleta de la app
+│  └─ simbolos/               Catalogo mundial de ~44.600 valores (FinanceDatabase, MIT; ver FUENTE.md)
 ├─ .claude/skills/
 │  ├─ analizar-accion/        Ficha completa de una empresa cotizada, con su nota
 │  ├─ valor-intrinseco/       DCF, Graham, multiplos (+ references/metodos.md)
@@ -175,11 +177,14 @@ proyecciones, no rellena.
 
 Verificado agosto 2026:
 
-- Yahoo omite cotizacion principal europea. `ticker_search` sondea aparte, verifica identidad por nombre.
-- ADR OTC se cuelan como primer resultado (`IBDSF`, `LVMUY`). Se degradan por mercado; ojo con `OID`.
+- Yahoo omite cotizacion principal europea. Desde HU-10, `ticker_search` busca primero en el
+  catalogo local (`mcp/symbols.py`, sin red), que conoce las demas cotizaciones de cada empresa;
+  Yahoo solo para lo que el catalogo no sabe ("Inditex" esta registrada como "Industria de
+  Diseno Textil"), y el sondeo con verificacion por nombre queda de ultimo recurso.
+- ADR OTC se cuelan como primer resultado (`IBDSF`, `LVMUY`). Los clasifica el catalogo (`mic == OTCM`); el nombre del mercado solo para simbolos que no conoce.
 - Europeos faltan `marketCap`, `sharesOutstanding`, `freeCashflow`. Dos primeros derivables via `enterpriseValue` - deuda neta, marcados `derived_fields`. FCF no derivable: `dcf_valuation` falla a proposito.
 - `floatShares` != numero acciones. En accionista control, infravalora (Inditex: 1.108 M vs 3.116 M).
-- `ticker_search` intermitente; reintenta hasta 3 veces.
+- La busqueda de Yahoo es intermitente; con el catalogo delante ya no se reintenta.
 - `quarterly()` (fundamentals-timeseries) devuelve una sola vez 900 dias y con menos campos: Europa viene sin FCF (`ITX.MC`, `SAN.MC`) y a veces sin un trimestre entero. No se rellena: va a `missing_fields` y `gaps` (ver § Trimestres).
 
 Si `fundamentals` devuelve error sistematico, Yahoo endurecio acceso. Solucion: clave gratuita en Finnhub o Financial Modeling Prep, anadir `FINNHUB_API_KEY` / `FMP_API_KEY` en `.mcp.json` env block.

@@ -3,8 +3,8 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-17, HU-18, HU-20, HU-21, HU-28, HU-30,
-HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4 (Hidden Gems) sigue entera.
+HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-17, HU-18, HU-20, HU-21, HU-28, HU-30,
+HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4 (Hidden Gems) tiene hecho el catalogo (HU-10).
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -402,7 +402,7 @@ visor "una a una" de Recomendaciones tampoco estaba conectado; arreglado con el 
 
 ## EPICA 4 — Hidden Gems mundiales
 
-### [ ] HU-10 — Catalogo local de simbolos mundial (L) — absorbe E1a-E1f
+### [x] HU-10 — Catalogo local de simbolos mundial (L) — absorbe E1a-E1f
 
 **Como** inversor, **quiero** un catalogo local de empresas cotizadas de todo el mundo,
 **para** buscar valores y alimentar las gemas sin depender de la busqueda de Yahoo.
@@ -410,24 +410,31 @@ visor "una a una" de Recomendaciones tampoco estaba conectado; arreglado con el 
 Fuente: [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase) (MIT). Detalle
 tecnico original en `docs/investigacion-repos.md` § Fase E1.
 
+Estado: hecho. `recursos/simbolos/equities.csv` (44.627 valores, 5,5 MB, un solo CSV en
+vez de shards) y `mcp/symbols.py`. Cambios sobre lo previsto: FRA fuera (duplicados de
+extranjeros, ya en GER), India en NSE, `_tokens()` se muda a `symbols.tokens` para no
+crear un import circular, y el sondeo de Yahoo se queda como ultimo recurso para nombres
+que el catalogo no conoce. El "mercado de origen" sale del propio catalogo (pais
+mayoritario de cada bolsa), sin tabla a mano.
+
 Criterios de aceptacion:
-- [ ] Vendorizado en `recursos/simbolos/` (no en `datos/`) con `LICENSE` y `FUENTE.md`
+- [x] Vendorizado en `recursos/simbolos/` (no en `datos/`) con `LICENSE` y `FUENTE.md`
       (repo, commit, fecha).
-- [ ] Mercados incluidos (codigos a verificar al vendorizar): EE. UU. (NYQ, NMS, NGM,
+- [x] Mercados incluidos (codigos a verificar al vendorizar): EE. UU. (NYQ, NMS, NGM,
       NCM, ASE), Canada (TOR), Reino Unido (LSE), Europa continental (MCE, PAR, AMS,
       MIL, GER, FRA, EBS, LIS, BRU, STO, CPH, HEL, OSL, VIE, ISE), Japon (JPX), Hong Kong
       (HKG), Corea (KSC), Taiwan (TAI), India (NSI), Australia (ASX), Singapur (SES),
       Brasil (SAO), Mexico (MEX), Sudafrica (JNB); mas OTC (OID, PNK, OQB, OQX, OBB)
       solo para clasificar, nunca como candidatos.
-- [ ] Solo columnas necesarias (`symbol`, `name`, `country`, `sector`, `industry`,
+- [x] Solo columnas necesarias (`symbol`, `name`, `country`, `sector`, `industry`,
       `exchange`, `market_cap`, `isin`, `mic`); tamano total en repo **< 25 MB**.
-- [ ] `mcp/symbols.py`: carga perezosa con `csv` de stdlib, indices por simbolo y por
+- [x] `mcp/symbols.py`: carga perezosa con `csv` de stdlib, indices por simbolo y por
       tokens del nombre (reutiliza `_tokens()`).
-- [ ] `ticker_search` consulta el catalogo primero y Yahoo solo si no hay coincidencia;
+- [x] `ticker_search` consulta el catalogo primero y Yahoo solo si no hay coincidencia;
       desaparecen los 3 reintentos.
-- [ ] `OTC_CODES` sustituido por la clasificacion del catalogo.
-- [ ] `ticker_search` expone `isin` y `mic` (desambigua `SAN` NYSE de `SAN.MC`).
-- [ ] Test **critico, no AVISO**: `ITX.MC`, `SAN.MC`, `IBE.MC`, `7203.T` y `0700.HK`
+- [x] `OTC_CODES` sustituido por la clasificacion del catalogo.
+- [x] `ticker_search` expone `isin` y `mic` (desambigua `SAN` NYSE de `SAN.MC`).
+- [x] Test **critico, no AVISO**: `ITX.MC`, `SAN.MC`, `IBE.MC`, `7203.T` y `0700.HK`
       se resuelven sin red.
 
 ### [ ] HU-11 — Universo de candidatos a gema (M)

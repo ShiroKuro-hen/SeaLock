@@ -517,8 +517,9 @@ async function search(query) {
         <tbody>${d.results.slice(0, 8).map((r) => `
           <tr>
             <td><span class="ticker">${esc(r.ticker)}</span>
-              ${r.found_via ? '<div class="tenue" style="font-size:11px">no listado por Yahoo</div>' : ""}</td>
-            <td>${esc(r.name || "")}</td>
+              ${(r.found_via || "").startsWith("primary") ? '<div class="tenue" style="font-size:11px">no listado por Yahoo</div>' : ""}</td>
+            <td>${esc(r.name || "")}
+              ${r.isin ? `<div class="tenue" style="font-size:11px">ISIN ${esc(r.isin)}</div>` : ""}</td>
             <td class="tenue">${esc(r.market || "")}
               ${r.warning ? '<div class="ambar" style="font-size:11px">OTC · baja liquidez</div>' : ""}</td>
             <td class="num"><button class="mini" data-ficha="${esc(r.ticker)}">Analizar</button></td>

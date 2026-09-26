@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 import scoring
+import symbols
 from mcp_common import MCPServer, log
 
 USER_AGENT = (
@@ -307,49 +308,26 @@ PRIMARY_SUFFIXES = [
 ]
 
 
-# Yahoo OTC market codes. 'OID' is used for unsponsored ADRs (Iberdrola trades
-# there as IBDSF) and doesn't contain the string "otc", so they must be
-# enumerated explicitly in addition to substring matching.
-OTC_CODES = {"pnk", "oid", "obb", "oqb", "oqx", "otc", "otcm", "yhd", "pinx"}
-
-
-def _is_otc(market):
+def _is_otc(market, ticker=None):
     """Pink sheets and grey markets: trade the same company with a fraction of the
-    liquidity and enormous spreads. Never the default suggestion."""
+    liquidity and enormous spreads. Never the default suggestion. The local catalog
+    decides for any symbol it knows (IBDSF, LVMUY); the market name is only the
+    fallback for symbols it doesn't."""
+    row = symbols.lookup(ticker) if ticker else None
+    if row:
+        return symbols.is_otc(row)
     m = (market or "").strip().lower()
-    if not m:
-        return False
-    return m in OTC_CODES or any(x in m for x in ("otc", "pink", "grey", "gray"))
+    return any(x in m for x in ("otc", "pink", "grey", "gray"))
 
 
 def _market_rank(ticker, market=None):
-    if _is_otc(market):
+    if _is_otc(market, ticker):
         return 98
     suffix = "." + ticker.split(".")[-1] if "." in ticker else ""
     return PRIMARY_SUFFIXES.index(suffix) if suffix in PRIMARY_SUFFIXES else 99
 
 
-# Words that don't identify a company (legal forms, articles, generics). Kept
-# bilingual since Yahoo returns company names in whichever language/market they
-# were registered in (Spanish companies especially).
-STOP_WORDS = {
-    "sa", "sab", "inc", "corp", "corporation", "plc", "nv", "ag", "se", "spa", "srl",
-    "ltd", "limited", "co", "company", "group", "grupo", "holding", "holdings",
-    "the", "and", "del", "las", "los", "una", "sus", "por", "con", "cia", "compania",
-}
-
-
-def _tokens(text):
-    """Significant words from a name, without accents or legal forms."""
-    if not text:
-        return set()
-    plain = (
-        text.lower()
-        .replace("á", "a").replace("é", "e").replace("í", "i")
-        .replace("ó", "o").replace("ú", "u").replace("ñ", "n").replace("ü", "u")
-    )
-    raw = "".join(c if c.isalnum() else " " for c in plain).split()
-    return {t for t in raw if len(t) >= 3 and t not in STOP_WORDS}
+_tokens = symbols.tokens
 
 
 def _symbol_name(ticker, quote=None):
@@ -370,6 +348,20 @@ def _symbol_name(ticker, quote=None):
     return None
 
 
+def _catalog_result(row):
+    return {
+        "ticker": row["symbol"],
+        "name": row["name"],
+        "type": "EQUITY",
+        "market": row["market"] or row["exchange"],
+        "sector": row["sector"] or None,
+        "country": row["country"] or None,
+        "isin": row["isin"] or None,
+        "mic": row["mic"] or None,
+        "found_via": "local catalog",
+    }
+
+
 @srv.tool(
     "ticker_search",
     "Find the correct symbol from a company name. Sorts by primary market and "
@@ -385,20 +377,57 @@ def _symbol_name(ticker, quote=None):
     required=["query"],
 )
 def ticker_search(query, verify_primary=True):
+    # The local catalog answers first, without network. Yahoo is only asked about
+    # names the catalog doesn't know ("Inditex" is registered as "Industria de Diseno
+    # Textil"), and then the catalog still fills in the home listing.
+    # Catalog hits come already ranked (exact symbol, home market, size); Yahoo's are
+    # sorted by the primary-market suffix list.
+    results = [_catalog_result(r) for r in symbols.search(query)]
+    if not results:
+        results, added = _yahoo_search(query, verify_primary)
+        results = sorted(
+            added + results, key=lambda r: _market_rank(r["ticker"], r.get("market"))
+        )
+    for r in results:
+        row = symbols.lookup(r["ticker"])
+        r.setdefault("isin", (row or {}).get("isin") or None)
+        r.setdefault("mic", (row or {}).get("mic") or None)
+        if _is_otc(r.get("market"), r["ticker"]):
+            r["warning"] = "OTC market: low liquidity, avoid unless it's the only option"
+
+    # The same company often trades on multiple exchanges. Exposed so it's
+    # clear you need to choose, instead of silently assuming the first.
+    equities = [r for r in results
+                if r.get("type") == "EQUITY" and not _is_otc(r.get("market"), r["ticker"])]
+    markets = []
+    for r in equities[:5]:
+        if r.get("market") and r["market"] not in [m["market"] for m in markets]:
+            markets.append({"ticker": r["ticker"], "market": r["market"]})
+
+    return {
+        "query": query,
+        "results": results,
+        "suggested": results[0]["ticker"] if results else None,
+        "available_markets": markets if len(markets) > 1 else None,
+        "notice": (
+            "Sorted by primary market, OTC downranked. If the company trades on several "
+            "markets, the primary one is usually its home country's: confirm it before "
+            "using the symbol, since price and currency change with the market."
+        ),
+    }
+
+
+def _yahoo_search(query, verify_primary):
+    """Yahoo search for names the catalog doesn't know. Returns (results, added)."""
     url = (
         "https://query1.finance.yahoo.com/v1/finance/search?q="
         f"{urllib.parse.quote(query)}&quotesCount=10&newsCount=0"
     )
-
-    quotes = []
-    for attempt in range(3):  # Yahoo search intermittently returns empty
-        try:
-            quotes = _get_json(url).get("quotes", [])
-        except Exception as exc:  # noqa: BLE001
-            log(f"[market] search failed (attempt {attempt + 1}): {exc}")
-        if quotes:
-            break
-        time.sleep(0.4)
+    try:
+        quotes = _get_json(url).get("quotes", [])
+    except Exception as exc:  # noqa: BLE001
+        log(f"[market] search failed: {exc}")
+        quotes = []
 
     results = [
         {
@@ -413,12 +442,22 @@ def ticker_search(query, verify_primary=True):
     ]
 
     # Yahoo frequently omits the primary quote (searching "Inditex" returns
-    # Warsaw, Milan and Hamburg, but never ITX.MC). The primary market probe
-    # fetches it and places it first, verifying name identity to avoid
-    # including a different company reusing those same letters.
+    # Warsaw, Milan and Hamburg, but never ITX.MC). The catalog knows the other
+    # listings of any symbol Yahoo did return, so the home one comes from there.
+    known = {r["ticker"] for r in results}
     added = []
+    for r in results:
+        row = symbols.lookup(r["ticker"])
+        for s in symbols.siblings(row) if row else []:
+            if s["symbol"] not in known and symbols.is_home(s) and not symbols.is_otc(s):
+                added.append(_catalog_result(s))
+                known.add(s["symbol"])
+    if added:
+        return results, added
+
+    # Not in the catalog either: probe the primary markets, verifying name
+    # identity to avoid including a different company reusing those same letters.
     if verify_primary and results:
-        known = {r["ticker"] for r in results}
         roots = sorted(
             {r["ticker"].split(".")[0].lstrip("0123456789") for r in results[:6] if r["ticker"]},
             key=len,
@@ -454,33 +493,7 @@ def ticker_search(query, verify_primary=True):
                 break
             if added:
                 break
-
-    results = sorted(
-        added + results, key=lambda r: _market_rank(r["ticker"], r.get("market"))
-    )
-    for r in results:
-        if _is_otc(r.get("market")):
-            r["warning"] = "OTC market: low liquidity, avoid unless it's the only option"
-
-    # The same company often trades on multiple exchanges. Exposed so it's
-    # clear you need to choose, instead of silently assuming the first.
-    equities = [r for r in results if r.get("type") == "EQUITY" and not _is_otc(r.get("market"))]
-    markets = []
-    for r in equities[:5]:
-        if r.get("market") and r["market"] not in [m["market"] for m in markets]:
-            markets.append({"ticker": r["ticker"], "market": r["market"]})
-
-    return {
-        "query": query,
-        "results": results,
-        "suggested": results[0]["ticker"] if results else None,
-        "available_markets": markets if len(markets) > 1 else None,
-        "notice": (
-            "Sorted by primary market, OTC downranked. If the company trades on several "
-            "markets, the primary one is usually its home country's: confirm it before "
-            "using the symbol, since price and currency change with the market."
-        ),
-    }
+    return results, added
 
 
 # ------------------------------------------------------------------- historical

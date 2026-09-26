@@ -20,8 +20,9 @@ monedas distintos, y elegir mal contamina toda la valoracion.
 - Los resultados marcados con `warning` son **ADR de mercado OTC** (`IBDSF`,
   `LVMUY`, `LVMHF`): misma empresa, liquidez irrisoria y horquillas enormes. No los uses.
 - Yahoo a veces **no lista la cotizacion principal**: buscar "Inditex" devuelve Varsovia,
-  Milan y Hamburgo, pero no Madrid. La herramienta lo sondea aparte y lo marca con
-  `found_via`.
+  Milan y Hamburgo, pero no Madrid. La herramienta busca primero en un catalogo local
+  que conoce todas las cotizaciones de cada empresa (`found_via: "local catalog"`) y trae
+  `isin` y `mic` cuando los hay: el ISIN identifica el valor sin ambiguedad.
 - Santander es el caso ambiguo tipico: `SAN` (NYSE, en USD) y `SAN.MC` (Madrid, en EUR)
   son ambas reales. Con moneda base EUR, la de Madrid es la que evita ruido de divisa.
   Si hay duda, **di cual has elegido y por que**.

@@ -1112,6 +1112,24 @@ check("select_ideas ordena y filtra por la nota final, no por la mecanica",
           [{"ticker": "CCC", "score": 9, "final_score": 6.9, "coverage_pct": 90}], [], set())),
       str(ordered))
 
+# ------------------------------------------------------------------- catalogo (HU-10)
+print("\n== catalogo local de simbolos (sin red) ==")
+import symbols  # noqa: E402
+
+for t in ("ITX.MC", "SAN.MC", "IBE.MC", "7203.T", "0700.HK"):
+    check(f"el catalogo resuelve {t} sin red", (symbols.lookup(t) or {}).get("symbol") == t)
+    check(f"ticker_search sugiere {t} desde el catalogo",
+          mer.ticker_search(t)["suggested"] == t and mer.ticker_search(t)["results"][0]["found_via"] == "local catalog")
+check("el catalogo trae el ISIN de SAN.MC", symbols.lookup("SAN.MC")["isin"] == "ES0113900J37")
+check("por nombre, la cotizacion de origen va primero (Santander -> SAN.MC, Toyota -> 7203.T)",
+      mer.ticker_search("Santander")["suggested"] == "SAN.MC"
+      and mer.ticker_search("Toyota")["suggested"] == "7203.T")
+check("un simbolo exacto gana a la cotizacion de origen (SAN -> NYSE)",
+      mer.ticker_search("SAN")["suggested"] == "SAN")
+check("el catalogo clasifica IBDSF como OTC y lo avisa", symbols.is_otc(symbols.lookup("IBDSF"))
+      and next(r for r in mer.ticker_search("Iberdrola")["results"] if r["ticker"] == "IBDSF").get("warning"))
+check("IBE.MC no es OTC", not mer._is_otc(None, "IBE.MC"))
+
 # ------------------------------------------------------------------- noticias (HU-05)
 print("\n== noticias: news_dedupe y news_sorted (puras) ==")
 company = [{"headline": "Apple sube", "date": "Tue, 22 Sep 2026 08:00:00 GMT"},
