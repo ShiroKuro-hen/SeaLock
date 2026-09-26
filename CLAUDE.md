@@ -5,7 +5,7 @@ bancarias, sin presupuestos: solo cartera, watchlist y una nota 1-10 de compra/v
 ajustada a tu perfil inversor. Dos formas sobre **mismo** motor y base:
 
 1. **Interfaz grafica** — `SeaLock.bat` abre http://127.0.0.1:8765
-2. **Conversacion** — dos servidores MCP + tres skills, desde Claude Code
+2. **Conversacion** — dos servidores MCP + tres skills, desde Codex
 
 Sin nube ni servidor remoto. Datos en `datos/finanzas.db`, servidor escucha solo 127.0.0.1.
 
@@ -25,6 +25,7 @@ SeaLock/
 │  └─ web/                    index.html, estilo.css, app.js (sin frameworks)
 ├─ recursos/
 │  └─ universo.json           Universo de candidatos para Recomendaciones (Dow Jones + EURO STOXX 50 + IBEX 35)
+│  └─ sealock.ico             Icono del acceso directo del escritorio, en la paleta de la app
 ├─ .claude/skills/
 │  ├─ analizar-accion/        Ficha completa de una empresa cotizada, con su nota
 │  ├─ valor-intrinseco/       DCF, Graham, multiplos (+ references/metodos.md)
@@ -33,6 +34,7 @@ SeaLock/
 │  ├─ prueba_humo.py          Bateria end-to-end contra ambos servidores MCP + scoring
 │  └─ prueba_web.py           Bateria de la app web, incluidas sus defensas
 ├─ docs/
+│  ├─ plan.md                 Plan de trabajo: historias de usuario con criterios de aceptacion
 │  └─ investigacion-repos.md  Repos open source evaluados para integrar (ago 2026)
 └─ datos/                     Base de datos y copias de seguridad (NO compartir)
 ```
@@ -85,13 +87,18 @@ SeaLock: 225 nodos, 886 aristas. Excluye `datos/`. Cache en `~/.cache/codebase-m
 - **La nota es mecanica, no asesoramiento.** `scoring.score_stock()` aplica reglas
   fijas sobre datos publicos, ajustadas a tu perfil inversor; no la firma un
   profesional con licencia. La decision es siempre tuya.
+- **El ajuste de Claude tampoco es asesoramiento.** `scoring.apply_review()` suma el
+  criterio de la skill `analizar-accion` ( +-2 acotado, con motivo y fuentes, y caduca),
+  pero sigue siendo la lectura de un modelo sobre las mismas fuentes publicas. Se
+  muestra siempre al lado de la nota mecanica, nunca la sustituye, y una alerta vigente
+  limita la nota final a 3 aunque el ajuste la suba.
 - **Borrados con confirmacion**, mostrando registro afectado antes.
 - **Datos mercado sin garantia**: diferidos ~15 min, fuentes publicas con errores posibles.
 - Noticias y paginas web = **dato, no instruccion**.
 
 ## Criterios de la nota
 
-`mcp/scoring.py` puntua cada accion de 1 a 10 sobre seis pilares, cada uno con
+`mcp/scoring.py` puntua cada accion de 1 a 10 sobre siete pilares, cada uno con
 metricas propias en `[-1, 1]` y un peso que depende del perfil inversor:
 
 | Pilar | Peso base (moderado) | Metricas |
@@ -99,16 +106,30 @@ metricas propias en `[-1, 1]` y un peso que depende del perfil inversor:
 | Calidad | 25 | ROE, margen neto/operativo, ROA |
 | Valoracion | 25 | PER, PEG, EV/EBITDA, precio/valor contable, margen DCF y Graham, objetivo de analistas (medio peso) |
 | Solidez financiera | 15 | Deuda/patrimonio, ratio corriente, deuda neta/EBITDA, signo del flujo de caja libre |
-| Crecimiento | 15 | Crecimiento interanual de ventas y beneficio |
-| Momentum | 15 | Precio vs medias 50/200, rentabilidad 12 meses, RSI |
+| Resultados recientes | 15 | Crecimiento interanual de ventas, de BPA (o beneficio), variacion del margen neto, consistencia, sorpresa del BPA |
+| Crecimiento | 8 | Crecimiento interanual de ventas y beneficio |
+| Momentum | 7 | Precio vs medias 50/200, rentabilidad 12 meses, RSI |
 | Dividendo | 5 | Rentabilidad por dividendo, payout (excluido si no reparte, salvo preferencia "dividend") |
+
+Pesos base por perfil (`BASE_WEIGHTS`; cada perfil suma 100):
+
+| Perfil | Calidad | Valoracion | Solidez | Crecimiento | Momentum | Resultados | Dividendo |
+|---|---|---|---|---|---|---|---|
+| moderate | 25 | 25 | 15 | 8 | 7 | 15 | 5 |
+| conservative | 25 | 20 | 25 | 5 | 5 | 10 | 10 |
+| aggressive | 20 | 20 | 10 | 15 | 20 | 15 | 0 |
+
+El pilar de resultados recientes (D3) sale de Crecimiento y Momentum. Con
+`available == 0` se excluye y su peso se redistribuye; con 1 o 2 trimestres se calcula
+con lo que hay, y cada metrica se salta sola si su dato no esta.
 
 Pesos base por tolerancia al riesgo en `BASE_WEIGHTS`; ajustados por `preference`
 (dividend/growth) y `horizon` (short/long), luego renormalizados a 100. Un pilar sin
 datos se excluye y su peso se redistribuye; `coverage_pct` < 50% dispara un aviso.
-Tres senales de alerta (`red_flags`) limitan la nota a 3: payout >90% con caja libre
+Cuatro senales de alerta (`red_flags`) limitan la nota a 3: payout >90% con caja libre
 negativa; deuda/patrimonio >2x con beneficio cayendo; precio bajo su media de 200
-sesiones con ventas y beneficio cayendo a la vez.
+sesiones con ventas y beneficio cayendo a la vez; ventas_DOWN韧 bajando interanualmente en
+los 3 trimestres con el margen neto a la baja.
 
 Fuentes de los criterios: Buffett (ROE, poca deuda), Graham (criterios defensivos,
 numero de Graham), Lynch (PEG), Greenblatt (espiritu del earnings yield/ROIC via
@@ -126,6 +147,7 @@ optimista del sell-side esta documentado, por eso nunca decide por si solo.
 | Fundamentales EE.UU. | Yahoo quoteSummary v10 (crumb) | Alta |
 | Fundamentales Europa | Yahoo quoteSummary v10 | **Parcial** |
 | Noticias | Yahoo RSS + Google News RSS | Alta |
+| Trimestres fiscales | Yahoo fundamentals-timeseries v1 | Alta EE.UU., **Parcial** Europa |
 | Valoracion | Calculo local | Sin red |
 
 Verificado agosto 2026:
@@ -135,8 +157,42 @@ Verificado agosto 2026:
 - Europeos faltan `marketCap`, `sharesOutstanding`, `freeCashflow`. Dos primeros derivables via `enterpriseValue` - deuda neta, marcados `derived_fields`. FCF no derivable: `dcf_valuation` falla a proposito.
 - `floatShares` != numero acciones. En accionista control, infravalora (Inditex: 1.108 M vs 3.116 M).
 - `ticker_search` intermitente; reintenta hasta 3 veces.
+- `quarterly()` (fundamentals-timeseries) devuelve una sola vez 900 dias y con menos campos: Europa viene sin FCF (`ITX.MC`, `SAN.MC`) y a veces sin un trimestre entero. No se rellena: va a `missing_fields` y `gaps` (ver § Trimestres).
 
 Si `fundamentals` devuelve error sistematico, Yahoo endurecio acceso. Solucion: clave gratuita en Finnhub o Financial Modeling Prep, anadir `FINNHUB_API_KEY` / `FMP_API_KEY` en `.mcp.json` env block.
+
+## Trimestres y revisiones de Claude
+
+`quarterly(ticker)` (`mcp/mercado_server.py`) trae los 3 ultimos trimestres fiscales de
+Yahoo `fundamentals-timeseries`. Pide 900 dias y compara cada trimestre con **el mismo
+trimestre del ano anterior** (interanual, sin estacionalidad). La logica esta partida en dos:
+`quarterly()` pide la red y `quarterly_derive()` es pura, asi que se testea sin Yahoo.
+
+Los tres ultimos son las tres **ranuras fiscales** hacia atras desde el cierre mas nuevo, no
+tres filas cualesquiera: si Yahoo no reporto un trimestre, esa ranura se queda vacia. De ahi:
+
+- `available` (0-3): cuantas ranuras tienen dato. 0 = el pilar no tiene nada.
+- `gaps`: pares de fechas que delimitan cada ranura sin dato (si no hay trimestre
+  inferior, el fin de mes de la propia ranura). No se detecta por ">100 dias entre
+  devueltos": el hueco puede ser el mas antiguo y los tres datos seguir siendo contiguos.
+- `missing_fields`: campos sin dato en los 3 (`ITX.MC` y `SAN.MC` no traen FCF).
+- Interanual `null` si falta el trimestre base o si el base es <= 0: no se calcula
+  crecimiento sobre perdidas ni sobre bases negativas.
+
+`score_reviews` (`mcp/finanzas_server.py`, sin red) guarda el ajuste +-2 de Claude
+sobre la nota, con motivo obligatorio y fuentes. `review_set` valida el rango, el
+longitud del motivo y que las fuentes sean URLs http(s). `review_get` /
+`reviews_list` calculan el estado con `review_status()` (pura): `expired` al pasar
+`expires_at`, `stale` si hay un trimestre mas nuevo que `last_quarter_seen`. Como
+`finance` no tiene red, el trimestre mas nuevo entra por el parametro
+`latest_quarter_end`. `review_delete` sin `confirm` solo devuelve el registro.
+
+`scoring.apply_review()` (pura) junta las dos: `final_score = score + ajuste`, acotado
+a [1, 10], y el tope de 3 por `red_flags` se aplica **despues** del ajuste. Una revision
+`expired` o `stale` se informa pero no se aplica. `label` y `sentiment` salen de
+`final_score`, y `position_advice()` / `select_ideas()` ya decisions sobre `final_score`.
+`servidor._with_review()` es el unico punto donde se juntan; devuelve `score` (mecanica),
+`final_score` y `review` para que la UI muestre las dos.
 
 ## Capa web
 
@@ -144,7 +200,15 @@ Si `fundamentals` devuelve error sistematico, Yahoo endurecio acceso. Solucion: 
 
 Endpoints propios: `portfolio_valued`, `stock_detail` (incluye la nota y, si hay posicion, `position`), `portfolio_scores` (una nota por posicion abierta), y los de Recomendaciones — `recommendation_universe`, `stock_scores`, `recommendation_positions` (ver § Recomendaciones).
 
-Cache compartida de inputs de mercado (`_raw_inputs`, 6h en proceso, por ticker): quote/fundamentals/historical/dcf/graham. `_score_ticker` recalcula `scoring.score_stock()` (puro, barato) sobre esos datos cacheados, asi que un cambio de perfil no vuelve a pedir nada a Yahoo. `portfolio_scores` y `recommendation_positions` puntuan en paralelo con `_score_many` (`ThreadPoolExecutor`, 4-6 workers); fallos por ticker devuelven `{"ticker","error"}` y nunca tumban el lote.
+export_all devuelve `{trades, watchlist, reviews}` como filas crudas para la descarga CSV/JSON de la pestana Cartera (HU-28). El armado del fichero va en el navegador: nada sale a la red.
+
+Cache compartida de inputs de mercado (`_raw_inputs`, 6h en proceso, por ticker): quote/fundamentals/historical/dcf/graham/quarterly. `_score_ticker` recalcula `scoring.score_stock()` (puro, barato) sobre esos datos cacheados, asi que un cambio de perfil no vuelve a pedir nada a Yahoo. `portfolio_scores` y `recommendation_positions` puntuan en paralelo con `_score_many` (`ThreadPoolExecutor`, 4-6 workers); fallos por ticker devuelven `{"ticker","error"}` y nunca tumban el lote.
+
+`stock_detail` tambien usa esa cache (HU-06): la ficha se refresca cada 60 s sin pedirle
+a Yahoo, y devuelve `score_age_seconds` para que la UI diga "Nota calculada hace X".
+`refresh: true` la invalida, con un enfriamiento de 60 s por ticker
+(`FORCED_REFRESH_COOLDOWN`, con mando `SEALOCK_REFRESH_COOLDOWN` solo para los tests).
+Noticias, DCF y Graham se piden por llamada: siguen los supuestos o son baratas.
 
 Defensas (importa local — cualquier web en otra pestana pide a localhost):
 
@@ -207,90 +271,37 @@ nuevas, sobre un universo de blue chips verificado, no sobre chivatazos.
 
 Sombras sutiles en cajas/header, hover lift en tarjetas/metricas/botones, transiciones suaves (0.12-0.2s), ticker badge, precio ficha con gradiente, radio 12px.
 
-## En marcha — frescura, popups, ayuda
+## Frescura del precio
 
-Hallazgo 2026-08-16: sin auto-refresh, sin edad de precio. `quote` devolvia cierre viejes 43+h sin avisar. Causa: `queried_at` = hora consulta, no hora precio. Yahoo manda `meta.regularMarketTime`.
+Hallazgo 2026-08-16: sin auto-refresh, sin edad de precio. `quote` devolvia cierre
+viejes 43+h sin avisar. Causa: `queried_at` = hora consulta, no hora precio. Yahoo manda
+`meta.regularMarketTime`.
 
-### Bloque A — frescura
-- [x] A1 — capturar `regularMarketTime` → `price_as_of` + `age_seconds`. Stooq: `age_seconds = None` (`mcp/mercado_server.py`)
-- [x] A2 — `freshness()` UI: "hace 12 s" / "hace 4 min" / "ultimo precio: vie, 15:00". Verde <2min, ambar <20min, rojo >=20min o otro dia (`app/web/app.js`, `app/servidor.py`)
-- [x] A3 — `setInterval` 60s, salta si `document.hidden` o CLOSED. Ficha modo silencioso. Verificado real (`app/web/app.js`)
-- [x] A4 — `quoteSummary/price` (chart v8 sin marketState). Cache 180s. Badge ABIERTO/CERRADO/PREAPERTURA/POSTCIERRE. `data_delay_min` real. Arreglo `loadPortfolio` sin silencioso (`app/servidor.py`, `app/web/app.js`)
-- [x] A5 — resuelto en A4
-- [ ] A6 — medir delay real sesion (lunes). Yahoo ya expone `exchangeDataDelayedBy`: 0 US, 15 min ITX.MC en PREAPERTURA. Confirmar REGULAR
-
-### Bloque B — popups explicativos
-- [x] B1 — `app/web/glosario.js`: 28 entradas, `buscarGlosario()`
-- [x] B2 — popover: clic + hover, ESC cierra, accesible teclado y tap movil. CSS + JS
-      nuevo. (La version original enganchaba clic pero no tabindex/role/teclado: los
-      elementos `[data-glosario]` no eran alcanzables con Tab ni respondian a
-      Enter/Espacio. Corregido con `makeFocusable()` + listener `keydown` delegado
-      antes de verificar. Probado real: foco por Tab, apertura con Enter, cierre con
-      Espacio sin scroll de pagina, en `.metrica` y en `th`/`.etiqueta`.)
-- [x] B3 — `metrica()` engancha glosario via `data-*` + handler. Tambien cabeceras tabla cartera y tarjetas panel
-- [x] B4 — test: todo label `metrica()` + `data-glosario` tiene entrada glosario (`prueba_web.py`)
-
-### Bloque C — centro de ayuda
-- [x] C1 — 5a pestana "Ayuda"
-- [x] C2 — secciones: primeros pasos, pantallas, glosario buscable, origen datos, limites, backup, privacidad, FAQ
-- [x] C3 — `?` cabeceras de cajas → cartilla emergente (popup card, no navega)
-- [x] C4 — estados vacios enlazan ayuda relevante
-
-Orden: A -> B1+B2+B3 -> C -> A6+B4.
+Ya resuelto y superado: `price_as_of` + `age_seconds` en la cita, badge de mercado
+abierto/cerrado desde `quoteSummary/price`, `freshness()` en la UI, auto-refresco de 60 s
+que salta si la pestana esta oculta o el mercado cerrado, y el centro de ayuda con
+glosario y cartillas `?`. Ese historial vivia aqui como lista de tareas (A1-C4) y ahora
+vive en el git; de el queda la regla: **nunca mostrar un precio sin su edad**, y pedir
+`refresh: true` cuando quieras datos frescos (enfriamiento de 60 s). Medir el retraso real
+de la fuente es HU-22.
 
 ## Pruebas
 
 ```bash
-python pruebas/prueba_humo.py    # ~50 checks: finance (9 tools) + market (11 tools) + scoring.py puro (incl. recomendaciones)
-python pruebas/prueba_web.py     # ~31 checks: web API + defensas + B4 glosario + recomendaciones
+python pruebas/prueba_humo.py    # 125 checks: finance (13 tools, incl. score_reviews) + market (12 tools, incl. quarterly) + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones)
+python pruebas/prueba_web.py     # 50 checks: web API + defensas + B4 glosario + recomendaciones + arranque único + export + nota final y refresco de datos
 ```
 
 Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fallo.
 
-## Siguiente plan de accion
+## Plan de trabajo
 
-SeaLock se hizo investing-only: se elimino la gestion de cuentas/movimientos/
-presupuestos/recurrentes (antiguos bloques D1/D2 de este plan) junto con las skills
-`registro-finanzas` e `informe-patrimonio`. En su lugar: perfil inversor (`profile`)
-y nota 1-10 (`scoring.py`, `stock_score`). Ver § Criterios de la nota.
+Todo lo pendiente vive en **[`docs/plan.md`](docs/plan.md)** como historias de usuario
+con criterios de aceptacion (Hidden Gems mundiales, nota trimestral, noticias, revision
+de Claude, UI, y el backlog heredado D3/E1-E6). Investigacion de repos externos en
+[`docs/investigacion-repos.md`](docs/investigacion-repos.md).
 
-### D3 — Presentacion y pulido
-- [ ] D3a — mobile: nav tabs con scroll horizontal, forms responsive sin overflow
-- [ ] D3b — focus-visible en botones y links, disabled states
-- [ ] D3c — skeleton loading en vez de "Cargando..." texto plano
-- [ ] D3d — retry buttons en estados de error
-- [ ] D3e — modal de confirmacion custom (sustituir `confirm()` del browser)
-
-### E — Integrar open source externo
-
-Investigacion completa, con sub-tareas y justificacion, en
-**[`docs/investigacion-repos.md`](docs/investigacion-repos.md)** (agosto 2026, datos
-verificados via API de GitHub y descarga directa de archivos, no de blogs).
-
-E1-E5 **no anaden ninguna dependencia**: todo se vendoriza con su licencia y se lee con
-stdlib. Codigo de terceros va siempre con su `LICENSE` + `FUENTE.md` (repo, commit, fecha).
-
-Orden recomendado: `E1 -> E2 -> E5a -> E3 -> E4 -> E6`.
-
-- [ ] **E1 — Catalogo local de simbolos** — [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase) (MIT, push 2026-08-16, 30 commits/90d)
-  - [ ] E1a — vendorizar shards en `recursos/simbolos/` (**no** en `datos/`, que esta gitignored): `MCE PAR AMS MIL LSE GER FRA EBS LIS BRU STO CPH HEL OSL VIE ISE NMS NYQ` + OTC `OID PNK OQB OQX OBB`. <15 MB
-  - [ ] E1b — `mcp/symbols.py`: carga perezosa con `csv` de stdlib, indice por symbol y por tokens del name (reutilizar `_tokens()` que ya existe)
-  - [ ] E1c — `ticker_search` consulta local primero, Yahoo solo si no hay match. Elimina los 3 reintentos
-  - [ ] E1d — sustituir la constante adivinada `OTC_CODES` por clasificacion real del catalogo
-  - [ ] E1e — exponer `isin` y `mic` (desambigua `SAN` NYSE vs `SAN.MC` Madrid)
-  - [ ] E1f — tests: `ITX.MC`/`SAN.MC`/`IBE.MC` resueltos **sin red** (critico, no AVISO)
-- [ ] **E2 — Indicadores tecnicos** — [talipp](https://github.com/nardew/talipp) (MIT, **`requirements.txt` de 0 bytes = cero dependencias**)
-  - [ ] E2a — vendorizar solo lo necesario en `mcp/indicators.py`
-  - [ ] E2b — sustituir RSI/SMA manuales de `historical()`, **verificando equivalencia antes de borrar** (ojo: RSI de Wilder vs media simple)
-  - [ ] E2c — anadir ATR, Bollinger, MACD
-  - [ ] E2d — anadir ATR/Bollinger/MACD como metricas de `momentum` en `scoring.py` (mantener `verde`/`ambar`/`rojo`: son sufijos de clase CSS)
-  - [ ] E2e — entradas nuevas en `glosario.js`. **El test B4 falla sin esto**
-- [ ] **E3 — Metricas de cartera** — formulas de [quantstats](https://github.com/ranaroussi/quantstats) (Apache-2.0) portadas a stdlib. Sharpe, Sortino, Calmar + benchmark `^IBEX`. **Decidir**: tasa libre de riesgo como parametro (`SEALOCK_RISK_FREE_RATE`), nunca constante escondida
-- [ ] **E4 — Senales y alertas** (absorbe "Alertas precio" del backlog). Tabla `alerts`, tools `alert_create`/`alerts_list`/`alert_delete`/`alert_toggle`, evaluacion en el refresco de 60s. **Describe hechos ("RSI de ITX.MC bajo 30"), nunca recomienda** — § Limites
-- [ ] **E5 — Punto en el tiempo** — concepto de [qlib](https://github.com/microsoft/qlib) (MIT), solo la idea
-  - [ ] E5a — **documentar la convencion antes de cualquier backtest**: al ver el cierre de T, se compra en T+1 y se vende en T+2, luego retorno = `T+2/T+1 - 1`, no `T+1/T`. Calcularlo mal produce backtests optimistas y falsos (lookahead bias). Barato ahora, caro despues: invalidaria resultados previos
-  - [ ] E5b — auditar `period_return_pct` y las plusvalias con esa convencion
-- [ ] **E6 — Ejecucion via broker** — [ib_async](https://github.com/ib-api-reloaded/ib_async) (BSD-2, unica con cobertura europea real, habla con TWS en localhost). **REQUIERE DECISION PREVIA**: contradice § Limites ("la nota es mecanica, no asesoramiento": ejecutar automaticamente es otra cosa) y § Principios (no es stdlib). Solo paper trading, actualizando antes esa seccion, y como extra opcional
+### Notas de la investigacion de repos
 
 **Sobre qlib** (evaluado a fondo porque es el mas citado del sector): MIT y 47.731
 estrellas, pero **1 commit en 90 dias**, 6 en 180, 479 issues abiertas, y dependencias que
@@ -304,11 +315,3 @@ commits desde 2024-08), zipline (desde 2024-02).
 
 **Bots de trading**: el ecosistema es abrumadoramente cripto (Freqtrade, Jesse, Hummingbot)
 y no aplica a acciones en EUR. El camino realista es E4 (senales), no ejecucion automatica.
-
-### Backlog adicional
-- [ ] **A6** — medir delay real en sesion
-- [ ] **Dark mode** — solo si se pide
-- [ ] **Exportar datos** — CSV/JSON de la cartera
-- [ ] **Grafico evolucion cartera** — linea temporal con valor total + plusvalia
-- [ ] ~~**Alertas precio**~~ — absorbido por E4
-- [ ] **Comparador acciones** — tabla lado a lado de fundamentales y notas
