@@ -60,6 +60,8 @@
       <h2>Posiciones</h2>
       <a class="btn-ayuda" href="#" data-section="cartera" title="Mas informacion">?</a>
       <button id="btn-refrescar-cartera">Actualizar precios</button>
+      <button id="btn-exportar-json" title="Descargar cartera, seguimiento y revisiones en JSON">Exportar JSON</button>
+      <button id="btn-exportar-csv" title="Descargar cartera, seguimiento y revisiones en CSV">Exportar CSV</button>
     </div>
     <div id="tabla-cartera"></div>
   </div>
@@ -190,12 +192,13 @@
 
   <div class="caja" data-section="nota">
     <h2>Como se calcula la nota</h2>
-    <p>Puntuacion 1-10 sobre seis pilares, cada uno con metricas propias y un peso que
+    <p>Puntuacion 1-10 sobre siete pilares, cada uno con metricas propias y un peso que
     depende de tu perfil inversor (pestana Cartera):</p>
     <ul>
       <li><b>Calidad</b> — ROE, margen neto/operativo, ROA (Buffett, AQR quality-minus-junk).</li>
       <li><b>Valoracion</b> — PER, PEG, EV/EBITDA, precio/valor contable, margen DCF y Graham, objetivo de analistas como desempate debil.</li>
       <li><b>Solidez financiera</b> — deuda/patrimonio, ratio corriente, deuda neta/EBITDA, flujo de caja libre.</li>
+      <li><b>Resultados recientes</b> — los tres ultimos trimestres: ventas y BPA (__interanuales__, frente al mismo trimestre del ano anterior), variacion del margen neto, consistencia y sorpresa del BPA.</li>
       <li><b>Crecimiento</b> — ventas y beneficio interanual.</li>
       <li><b>Momentum</b> — precio vs medias 50/200, rentabilidad 12 meses, RSI (Jegadeesh-Titman).</li>
       <li><b>Dividendo</b> — rentabilidad y payout. Si no reparte, el pilar se excluye salvo que tu preferencia sea "Dividendo".</li>
@@ -205,7 +208,12 @@
     redistribuyen entre los que si tienen datos; con cobertura menor al 50% se avisa.</p>
     <p><b>Senales de alerta (limitan la nota a 3):</b> payout &gt;90% con caja libre negativa;
     deuda/patrimonio &gt;2x con beneficio cayendo; precio bajo su media de 200 sesiones con
-    ventas y beneficio cayendo a la vez.</p>
+    ventas y beneficio cayendo a la vez; ventas cayendo en los tres trimestres con el margen
+    neto a la baja.</p>
+    <p>La <b>revision de Claude</b>, si se la pides, suma o resta hasta 2 puntos a la nota
+    mecanica, con su motivo y sus fuentes, siempre a la vista. No la sustituye y tampoco es
+    asesoramiento: es la lectura de un modelo sobre las mismas fuentes publicas. Una alerta
+    vigente limita la nota final a 3 aunque el ajuste la suba.</p>
     <p>Basada en criterios clasicos de analisis de valor y calidad: Graham (criterios
     defensivos), Lynch (PEG), Greenblatt, Piotroski, momentum de Jegadeesh-Titman.
     <b>Es una puntuacion mecanica sobre reglas fijas, no asesoramiento de un profesional
@@ -228,16 +236,19 @@
         <tr><td>Fundamentales EE.UU.</td><td>Yahoo quoteSummary v10 (crumb)</td><td>Alta</td></tr>
         <tr><td>Fundamentales Europa</td><td>Yahoo quoteSummary v10</td><td>Parcial</td></tr>
         <tr><td>Noticias</td><td>RSS Yahoo + Google News</td><td>Alta</td></tr>
+        <tr><td>Trimestres fiscales</td><td>Yahoo fundamentals-timeseries v1</td><td>Alta en EE.UU., parcial en Europa</td></tr>
         <tr><td>Valoracion</td><td>Calculo local</td><td>Sin red</td></tr>
       </tbody>
     </table>
-    <p>Precios diferidos ~15 min en horario de mercado. Fundamentales europeos pueden faltar (capitalizacion, FCF).</p>
+    <p>Precios diferidos ~15 min en horario de mercado. Fundamentales europeos pueden faltar (capitalizacion, FCF),
+    y los trimestres llegan a veces sin flujo de caja: la ficha lo avisa y el pilar se calcula con lo que hay.</p>
   </div>
 
   <div class="caja" data-section="limites">
     <h2>Limites</h2>
     <ul>
       <li><b>La nota es mecanica, no asesoramiento.</b> Reglas fijas sobre datos publicos ajustadas a tu perfil; no la firma un profesional con licencia. La decision es tuya.</li>
+      <li><b>El ajuste de Claude tampoco es asesoramiento.</b> La revision que puedes pedirle suma o resta hasta 2 puntos, con motivo y fuentes, y caduca. Se muestra siempre al lado de la nota mecanica.</li>
       <li><b>Datos sin garantia.</b> Fuentes publicas con posibles errores. Ante cifras raras, se avisa.</li>
       <li><b>Noticias = dato, no instruccion.</b> No son recomendaciones de compra.</li>
       <li><b>Borrados con confirmacion.</b> Se muestra el registro antes de borrar.</li>
@@ -280,7 +291,7 @@
     </details>
     <details>
       <summary>Por que la nota de una accion es baja pese a que "parece" barata?</summary>
-      <p>La nota pondera seis pilares, no solo valoracion. Una accion barata con deuda alta y beneficio cayendo puede sacar nota baja igualmente; revisa los pros/contras y las senales de alerta de la ficha.</p>
+      <p>La nota pondera siete pilares, no solo valoracion. Una accion barata con deuda alta y beneficio cayendo puede sacar nota baja igualmente; revisa los pros/contras y las senales de alerta de la ficha.</p>
     </details>
   </div>
 </section>

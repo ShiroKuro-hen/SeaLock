@@ -32,7 +32,9 @@ import finanzas_server as fin  # noqa: E402
 import mercado_server as mer  # noqa: E402
 import scoring  # noqa: E402
 
-RAW_CACHE_TTL = 6 * 3600  # seconds; quote/fundamentals/historical/dcf/graham per ticker.
+RAW_CACHE_TTL = 6 * 3600  # seconds; quote/fundamentals/historical/dcf/graham/quarterly per ticker.
+# ponytail: el enfriamiento es una constante; el env existe solo para poder probarlo.
+FORCED_REFRESH_COOLDOWN = float(os.environ.get("SEALOCK_REFRESH_COOLDOWN", 60))
 # Scoring ~110 universe tickers is network-heavy; caching the raw inputs (not the score)
 # means a profile change only re-runs scoring.score_stock (pure, cheap) instead of
 # refetching Yahoo. Also backs portfolio_scores, replacing its old score-only cache.
@@ -216,9 +218,16 @@ def _position_snapshot(ticker, holding, quote_data):
     }
 
 
-def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=2.5):
-    """Quote + fundamentals + history + valuation + news + score for a single security."""
-    output = {"ticker": ticker.upper().strip()}
+def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=2.5,
+                 latest_quarter_end=None, refresh=False):
+    """Quote + fundamentals + history + valuation + news + score for a single security.
+
+    `refresh=true` forces a refetch of the cached inputs (at most one per minute).
+    `latest_quarter_end` (AAAA-MM-DD) is the newest quarterly close the caller knows about;
+    it is what tells whether Claude's review is still up to date.
+    """
+    tkr = ticker.upper().strip()
+    output = {"ticker": tkr}
 
     def try_section(key, fn):
         try:
@@ -226,9 +235,18 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
         except Exception as exc:  # noqa: BLE001
             output[key] = {"error": f"{type(exc).__name__}: {exc}"}
 
-    try_section("quote", lambda: mer.quote(tickers=[ticker])["quotes"][0])
-    try_section("fundamentals", lambda: mer.fundamentals(ticker=ticker))
-    try_section("historical", lambda: mer.historical(ticker=ticker, date_range="1y"))
+    # Price, fundamentals and the score's inputs come from the 6h cache so the 60s
+    # auto-refresh doesn't hit Yahoo on every tick; "Actualizar nota" (refresh=true)
+    # forces a refetch at most once a minute. News and the DCF, which follow the
+    # assumptions or are cheap, stay per call.
+    raw = _raw_inputs(ticker, refresh=refresh)
+    for key in ("quote", "fundamentals", "historical", "quarterly"):
+        section = raw.get(key)
+        if key == "quote" and not section and raw.get("quote_error"):
+            section = {"error": raw["quote_error"]}
+        output[key] = section or {}
+    output["score_age_seconds"] = _inputs_age(ticker)
+
     try_section("news", lambda: mer.news(ticker=ticker, limit=8)["news"])
     try_section("dcf", lambda: mer.dcf_valuation(
         ticker=ticker,
@@ -250,14 +268,18 @@ def stock_detail(ticker, growth_pct=8, discount_rate_pct=9, terminal_growth_pct=
         holding = None
 
     output["position"] = _position_snapshot(output["ticker"], holding, clean("quote") or {})
-    output["score"] = scoring.score_stock(
+    # The newest quarter close is already in this same response, so a review that saw an
+    # older one is flagged stale here instead of waiting for the caller to say so.
+    quarters = (clean("quarterly") or {}).get("quarters") or []
+    output["score"] = _with_review(output["ticker"], scoring.score_stock(
         clean("quote") or {}, clean("fundamentals") or {}, clean("historical") or {},
         dcf=clean("dcf"), graham=clean("graham"), profile=fin.profile_get(), holding=holding,
-    )
+        quarterly=clean("quarterly") or {},
+    ), latest_quarter_end or (quarters[0].get("period_end") if quarters else None))
     return output
 
 
-_raw_cache = {}  # ticker -> (timestamp, {"quote", "fundamentals", "historical", "dcf", "graham"})
+_raw_cache = {}  # ticker -> (timestamp, {"quote", "fundamentals", "historical", "dcf", "graham", "quarterly"})
 
 
 def _fetch_raw(ticker):
@@ -286,19 +308,50 @@ def _fetch_raw(ticker):
         raw["graham"] = mer.graham_valuation(ticker=ticker)
     except Exception:  # noqa: BLE001 - optional input
         raw["graham"] = None
+    try:
+        raw["quarterly"] = mer.quarterly(ticker=ticker)
+    except Exception:  # noqa: BLE001 - recent results, just skipped
+        raw["quarterly"] = {}
     return raw
 
 
-def _raw_inputs(ticker):
+def _raw_inputs(ticker, refresh=False):
     """Raw market data for a ticker, cached 6h in-process. Reused across profile changes
-    and across the Cartera/Recomendaciones tabs so they don't refetch the same ticker."""
+    and across the Cartera/Recomendaciones tabs so they don't refetch the same ticker.
+
+    `refresh` drops this ticker's entry and refetches, but at most one forced refresh per
+    FORCED_REFRESH_COOLDOWN seconds: the button must not turn into a Yahoo hammer.
+    """
     now = time.time()
     cached = _raw_cache.get(ticker)
-    if cached and now - cached[0] < RAW_CACHE_TTL:
-        return cached[1]
+    if cached:
+        if refresh:
+            if now - cached[0] < FORCED_REFRESH_COOLDOWN:
+                return cached[1]  # too soon: serve the cache and report its age
+        elif now - cached[0] < RAW_CACHE_TTL:
+            return cached[1]
     raw = _fetch_raw(ticker)
     _raw_cache[ticker] = (now, raw)
     return raw
+
+
+def _inputs_age(ticker):
+    cached = _raw_cache.get(ticker)
+    return int(time.time() - cached[0]) if cached else None
+
+
+def _review_for(ticker, latest_quarter_end=None):
+    """Claude's review for a ticker, or None. Finance is local so this is a fast DB hit."""
+    try:
+        return fin.review_get(ticker, latest_quarter_end=latest_quarter_end)["review"]
+    except Exception:  # noqa: BLE001 - a missing review must never break scoring
+        return None
+
+
+def _with_review(ticker, score_result, latest_quarter_end=None):
+    """Merge mechanical score and Claude's adjustment into one flat result:
+    score (mecanica), final_score, review, label and sentiment already on final_score."""
+    return {**score_result, **scoring.apply_review(score_result, _review_for(ticker, latest_quarter_end))}
 
 
 def _score_ticker(ticker, profile, holding=None):
@@ -310,11 +363,12 @@ def _score_ticker(ticker, profile, holding=None):
     result = scoring.score_stock(
         raw.get("quote") or {}, fundamentals, raw.get("historical") or {},
         dcf=raw.get("dcf"), graham=raw.get("graham"), profile=profile, holding=holding,
+        quarterly=raw.get("quarterly") or {},
     )
     result["ticker"] = ticker
     result["sector"] = fundamentals.get("sector") if ok_fundamentals else None
     result["name"] = (fundamentals.get("name") if ok_fundamentals else None) or (raw.get("quote") or {}).get("name")
-    return result
+    return _with_review(ticker, result)
 
 
 def _score_many(tickers, profile, holdings=None):
@@ -424,6 +478,15 @@ def recommendation_positions():
     return {"positions": out, "profile": profile}
 
 
+def export_all():
+    """Everything the user owns, as plain rows: local backup to CSV/JSON, no network."""
+    return {
+        "trades": fin.sql_query("SELECT * FROM trades ORDER BY date, id", 100000)["rows"],
+        "watchlist": fin.watchlist_list()["watchlist"],
+        "reviews": fin.reviews_list()["reviews"],
+    }
+
+
 API["app"] = {
     "portfolio_valued": portfolio_valued,
     "portfolio_scores": portfolio_scores,
@@ -431,6 +494,7 @@ API["app"] = {
     "recommendation_universe": recommendation_universe,
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
+    "export_all": export_all,
     "config": lambda: {"currency": CURRENCY, "database_path": fin.DB_PATH},
 }
 

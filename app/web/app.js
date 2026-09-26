@@ -340,13 +340,47 @@ async function loadPortfolioScores() {
       const cell = document.querySelector(`[data-nota="${ticker}"]`);
       if (!cell) continue;
       if (!s || s.error) { cell.innerHTML = '<span class="tenue">—</span>'; continue; }
-      const aviso = s.score < 4 ? ' <span class="ambar" title="Nota baja: revisar">⚠</span>' : "";
-      cell.innerHTML = `<span class="${s.sentiment}">${s.score}/10</span>${aviso}`;
+      const aviso = s.final_score < 4 ? ' <span class="ambar" title="Nota baja: revisar">⚠</span>' : "";
+      cell.innerHTML = `<span class="${s.sentiment}">${notaMostrada(s)}/10</span>${marcaRevision(s)}${aviso}`;
       cell.title = s.label;
     }
   } catch (e) {
     // Silencioso: la tabla ya se mostro sin notas, no es un fallo bloqueante.
   }
+}
+
+/** Exporta cartera, seguimiento y revisiones. Todo se resuelve en el navegador: el
+ *  servidor devuelve filas y aqui se arma el fichero. Sin red, sin escribir en disco. */
+async function exportar(formato) {
+  try {
+    const d = await api("app", "export_all");
+    const nombre = `sealock-${today()}`;
+    if (formato === "json") {
+      descargar(`${nombre}.json`, JSON.stringify(d, null, 2), "application/json");
+      return;
+    }
+    const tablas = ["trades", "watchlist", "reviews"];
+    const celda = (v) => {
+      const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const columnas = [...new Set(tablas.flatMap((t) => (d[t] || []).flatMap(Object.keys)))];
+    const lineas = [["tabla", ...columnas].join(",")];
+    for (const t of tablas)
+      for (const fila of d[t] || []) lineas.push([t, ...columnas.map((c) => celda(fila[c]))].join(","));
+    descargar(`${nombre}.csv`, lineas.join("\n"), "text/csv");
+  } catch (e) {
+    notify(`No se pudo exportar: ${e.message}`, "malo");
+  }
+}
+
+function descargar(nombre, contenido, tipo) {
+  const url = URL.createObjectURL(new Blob([contenido], { type: tipo }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nombre;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function loadWatchlist() {
@@ -413,7 +447,7 @@ async function search(query) {
   }
 }
 
-async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null) {
+async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec = null, refresh = false) {
   const cont = document.getElementById("ficha");
   CURRENT_STOCK = { ticker, assumptions };
   if (!silencioso) REC_RETURN_INDEX = fromRec;
@@ -423,8 +457,11 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
     cont.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  const boton = document.getElementById("btn-actualizar-nota");
+  if (boton) { boton.disabled = true; boton.textContent = "Actualizando…"; }
+
   try {
-    const d = await api("app", "stock_detail", { ticker, ...assumptions });
+    const d = await api("app", "stock_detail", { ticker, ...assumptions, refresh });
     const c = d.quote || {}, f = d.fundamentals || {}, h = d.historical || {};
     const v = f.valuation || {}, r = f.profitability || {}, s = f.financial_strength || {};
     CURRENT_STOCK.marketStatus = c.status;
@@ -453,7 +490,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
         ${c.status === "CLOSED" ? `<div class="nota" style="margin-top:12px">Mercado cerrado: este es el
           <b>ultimo precio de cierre</b>, no una cotizacion en vivo.
           ${c.data_delay_min ? `Datos con ${c.data_delay_min} min de retraso en horario de mercado.` : ""}</div>` : ""}
-        ${renderScore(d.score)}
+        ${renderScore(d.score, d.score_age_seconds)}
         ${d.position ? `<div class="metricas" style="margin-top:14px">
           ${metrica("Cantidad", number(d.position.quantity, 4))}
           ${metrica("Coste medio", money(d.position.average_cost, d.position.currency))}
@@ -504,6 +541,8 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
         </div>
       </div>
 
+      ${renderQuarterly(d.quarterly)}
+
       <div class="caja">
         <h2>Noticias</h2>
         ${Array.isArray(d.news) && d.news.length
@@ -517,6 +556,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       <div class="caja">
         <div class="acciones-caja">
           <button id="btn-seguir">Anadir a seguimiento</button>
+          <button id="btn-actualizar-nota" title="Volver a pedir los datos y recalcular la nota">Actualizar nota</button>
           ${REC_RETURN_INDEX !== null ? '<button id="btn-volver-rec">← Volver a recomendaciones</button>' : ""}
         </div>
         <p class="ayuda" style="margin:12px 0 0">
@@ -529,6 +569,10 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
     document.getElementById("form-dcf").addEventListener("submit", (ev) => {
       ev.preventDefault();
       viewStock(ticker, formData(ev.target), false, REC_RETURN_INDEX);
+    });
+    document.getElementById("btn-actualizar-nota").addEventListener("click", () => {
+      CURRENT_STOCK.assumptions = formData(document.getElementById("form-dcf"));
+      viewStock(ticker, CURRENT_STOCK.assumptions, false, REC_RETURN_INDEX, true);
     });
     document.getElementById("btn-seguir").addEventListener("click", async () => {
       await api("finance", "watchlist_add", { ticker, name: f.name || null });
@@ -545,14 +589,147 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
   }
 }
 
-function renderScore(s) {
+/** Caja "Resultados trimestrales": de donde sale el pilar de resultados recientes.
+ *  Inline SVG, sin librerias, y "—" en toda celda sin dato. */
+function renderQuarterly(q) {
+  const quarters = (q && q.quarters) || [];
+  const cur = quarters.find((x) => x.currency) || quarters[0] || {};
+  const moneda = cur.currency || "";
+
+  const fila = (v, fmt) => (v === null || v === undefined ? "—" : fmt(v));
+
+  let html = `<div class="caja">
+    <div class="cabecera-caja">
+      <h2>Resultados trimestrales</h2>
+      <a class="btn-ayuda" href="#" data-section="trimestres" title="Mas informacion">?</a>
+    </div>`;
+  if (!quarters.length) {
+    html += `<div class="vacio">${esc(
+      (q && q.note_es) || "Sin datos trimestrales publicos para este valor.")}</div></div>`;
+    return html;
+  }
+  if (q.note_es && q.available < 3) html += `<div class="nota">${esc(q.note_es)}</div>`;
+
+  const ingresos = quarters.map((x) => x.revenue);
+  html += `<div class="trimestres-grafico">${barrasSVG(ingresos)}${
+    moneda ? `<span class="tenue">Ventas en ${esc(moneda)}</span>` : ""}</div>`;
+
+  html += `<table class="tabla">
+    <thead><tr>
+      <th>Cierre</th>
+      <th class="num">Ventas${moneda ? ` (${esc(moneda)})` : ""}</th>
+      <th class="num">Interanual</th>
+      <th class="num">Beneficio</th>
+      <th class="num">BPA</th>
+      <th class="num">Margen</th>
+    </tr></thead>
+    <tbody>${quarters.map((x) => `<tr>
+      <td>${esc(x.period_end || "—")}</td>
+      <td class="num">${fila(x.revenue, (v) => compact(v))}</td>
+      <td class="num ${sign(x.revenue_yoy_pct)}">${fila(x.revenue_yoy_pct, (v) => pct(v))}</td>
+      <td class="num">${fila(x.net_income, (v) => compact(v))}</td>
+      <td class="num">${fila(x.diluted_eps, (v) => number(v, 2))}</td>
+      <td class="num">${fila(x.net_margin_pct, (v) => `${number(v, 1)} %`)}</td>
+    </tr>`).join("")}</tbody></table>`;
+  if (q.missing_fields && q.missing_fields.length) {
+    html += `<div class="tenue" style="margin-top:8px">Sin dato en los tres trimestres:
+      ${esc(q.missing_fields.join(", "))}.</div>`;
+  }
+  if (q.gaps && q.gaps.length) {
+    html += `<div class="tenue" style="margin-top:4px">Huecos: ${esc(
+      q.gaps.map((g) => g.join(" → ")).join("; "))}.</div>`;
+  }
+  return html + `</div>`;
+}
+
+/** Barras verticales SVG con el valor dentro. Una barra por trimestre, en el mismo orden
+ *  que la tabla: si no hay dato, hueco; sin ventas positivas, no hay grafico. */
+function barrasSVG(valores) {
+  const utiles = valores.filter((v) => typeof v === "number" && v > 0);
+  if (!utiles.length) return "";
+  const max = Math.max(...utiles);
+  const ancho = 34, gap = 12, alto = 74, base = alto;
+  const svg = valores.map((v, i) => {
+    const x = i * (ancho + gap) + 2;
+    if (typeof v !== "number" || v <= 0) return "";
+    const h = Math.max(2, Math.round((v / max) * 64));
+    return `<rect x="${x}" y="${base - h}" width="${ancho}" height="${h}" rx="3"
+      fill="var(--acento)"><title>${esc(compact(v))}</title></rect>`;
+  }).join("");
+  const texto = valores.map((v) => (typeof v === "number" ? compact(v) : "sin dato")).join(", ");
+  return `<svg width="${valores.length * (ancho + gap)}" height="${alto + 4}"
+    viewBox="0 0 ${valores.length * (ancho + gap)} ${alto + 4}" role="img"
+    aria-label="Ventas por trimestre: ${esc(texto)}">${svg}</svg>`;
+}
+
+/** La nota que se ve es la final (mecanica + ajuste de Claude). Sin decimales si no hay
+ *  revision, para no ensuciar; con decimales cuando el ajuste los cambia. */
+function edadLegible(segundos) {
+  if (segundos < 90) return `${segundos} s`;
+  if (segundos < 5400) return `${Math.round(segundos / 60)} min`;
+  if (segundos < 172800) return `${Math.round(segundos / 3600)} h`;
+  return `${Math.round(segundos / 86400)} dias`;
+}
+
+function notaMostrada(s) {
+  const final = s.final_score ?? s.score;
+  const decimales = s.review && s.review_applied && Math.abs(final - s.score) > 0.05 ? 1 : 0;
+  return number(final, decimales);
+}
+
+/** Marca pequena de "hay revision de Claude" en listas. */
+function marcaRevision(s) {
+  if (!s || !s.review || !s.review_applied) return "";
+  const signo = s.review.adjustment >= 0 ? "+" : "";
+  return `<span class="revision-marca" title="Revision de Claude ${signo}${number(s.review.adjustment, 1)}">Claude</span>`;
+}
+
+function renderReview(s) {
+  const r = s && s.review;
+  if (!r) {
+    return `<div class="metrica tenue" data-glosario="Ajuste de Claude" style="background:none;padding:6px 0;font-size:12px">
+      Sin revision de Claude. Pidele <i>"analiza ${esc((s && s.ticker) || "una accion")}"</i> en Claude Code para anadirla.</div>`;
+  }
+  const signo = r.adjustment >= 0 ? "+" : "";
+  const estado = r.status === "active" ? "vigente" : r.status === "expired" ? "caducada" : "obsoleta";
+  const explica = r.status === "expired"
+    ? "Se caduco: paso su fecha de caducidad."
+    : r.status === "stale"
+      ? `Quedo obsoleta: hay un trimestre mas nuevo que el visto (${esc(r.last_quarter_seen || "?")}).`
+      : "";
+  let html = `<div class="revision ${r.status === "active" ? "" : "revision-tachada"}">
+    <div class="revision-cabecera">
+      <span class="metrica" data-glosario="Nota mecanica">Nota mecanica ${number(s.score, 1)}</span>
+      <span class="metrica" data-glosario="Ajuste de Claude">Revision Claude ${signo}${number(r.adjustment, 1)}</span>
+      <span class="metrica" data-glosario="Nota final">Nota final ${number(s.final_score ?? s.score, 1)}</span>
+      <span class="tenue">(${estado})</span>
+    </div>
+    <div>${esc(r.rationale)}</div>`;
+  if (explica) html += `<div class="nota">${esc(explica)}</div>`;
+  if (r.sources && r.sources.length) {
+    html += `<div class="revision-fuentes">Fuentes: `;
+    html += r.sources
+      .map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`)
+      .join(" &middot; ");
+    html += `</div>`;
+  }
+  html += `<div class="tenue">${esc(r.created_at || "")}${r.expires_at ? ` &middot; caduca ${esc(r.expires_at)}` : ""}</div>`;
+  return html + `</div>`;
+}
+
+function renderScore(s, edadSegundos) {
   if (!s) return "";
   const color = s.sentiment || "ambar";
   let html = `<div class="veredicto veredicto-${color}">`;
   html += `<div class="veredicto-header">
-      <span class="metrica" data-glosario="Nota" style="font-size:22px;font-weight:700;margin-right:10px">${s.score}/10</span>
+      <span class="metrica" data-glosario="Nota" style="font-size:22px;font-weight:700;margin-right:10px">${notaMostrada(s)}/10</span>
       <span>${esc(s.label)}</span>
     </div>`;
+  html += renderReview(s);
+  if (edadSegundos !== undefined && edadSegundos !== null) {
+    html += `<div class="tenue" style="font-size:12px;margin-top:6px">Nota calculada hace ${
+      esc(edadLegible(edadSegundos))}. Los datos se refrescan al pedirlo, no cada 60 s.</div>`;
+  }
   if (s.coverage_warning) html += `<div class="nota">${esc(s.coverage_warning)}</div>`;
 
   (s.pillars || []).filter((p) => p.subscore !== null).forEach((p) => {
@@ -655,13 +832,15 @@ function pickIdeas(scores, meta, heldSectors) {
   const ideas = [];
   for (const [ticker, s] of Object.entries(scores)) {
     if (!s || s.error) continue;
-    if (s.score === undefined || s.score < 7) continue;
+    const final = s.final_score ?? s.score; // la nota final manda, como en select_ideas()
+    if (final === undefined || final < 7) continue;
     if (s.coverage_pct === undefined || s.coverage_pct < 50) continue;
     const m = meta[ticker] || {};
     ideas.push({
       ticker, name: m.name || s.name, indices: m.indices || [],
-      score: s.score, label: s.label, sentiment: s.sentiment, sector: s.sector,
+      score: final, mechanical_score: s.score, label: s.label, sentiment: s.sentiment, sector: s.sector,
       coverage_pct: s.coverage_pct, pros: s.pros || [], score_full: s,
+      review: s.review || null, review_applied: !!s.review_applied,
       diversifies: heldSectors.size > 0 && !!s.sector && !heldSectors.has(s.sector),
     });
   }
@@ -684,7 +863,7 @@ function renderRecPositions() {
       const s = p.score || {};
       return `<tr class="rec-fila" data-rec-idx="${i}" tabindex="0" role="button" aria-label="Ver detalle de ${esc(p.ticker)}">
         <td><span class="ticker">${esc(p.ticker)}</span></td>
-        <td class="num">${s.error ? "—" : `<span class="${s.sentiment}">${s.score}/10</span>`}</td>
+        <td class="num">${s.error ? "—" : `<span class="${s.sentiment}">${notaMostrada(s)}/10</span>${marcaRevision(s)}`}</td>
         <td class="num">${p.weight_pct !== null && p.weight_pct !== undefined ? `${number(p.weight_pct, 1)} %` : "—"}</td>
         <td class="num ${sign(p.gain_pct)}">${pct(p.gain_pct)}</td>
         <td><span class="rec-accion rec-accion-${p.advice.action_key}">${esc(p.advice.action_es)}</span></td>
@@ -707,7 +886,7 @@ function renderRecIdeas() {
     <div class="rec-idea-tarjeta" data-rec-idx="${offset + i}" tabindex="0" role="button"
       aria-label="Ver detalle de ${esc(idea.ticker)}">
       <div class="rec-idea-cab"><span class="ticker">${esc(idea.ticker)}</span>
-        <span class="${idea.sentiment}" style="font-weight:700">${idea.score}/10</span></div>
+        <span class="${idea.sentiment}" style="font-weight:700">${number(idea.score, idea.review_applied ? 1 : 0)}/10</span>${marcaRevision(idea.score_full)}</div>
       <div class="tenue" style="font-size:13px">${esc(idea.name || "")}</div>
       <div style="margin-top:6px">${(idea.indices || []).map((ix) => `<span class="rec-badge">${esc(ix)}</span>`).join("")}
         ${idea.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}</div>
@@ -774,6 +953,7 @@ function renderRecViewer(index) {
   document.getElementById("rec-prev").addEventListener("click", () => openRecViewer(index - 1));
   document.getElementById("rec-next").addEventListener("click", () => openRecViewer(index + 1));
   document.getElementById("rec-volver-lista").addEventListener("click", closeRecViewer);
+  visor.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
   document.getElementById("rec-ver-ficha").addEventListener("click", () => {
     changeView("acciones");
     viewStock(item.ticker, {}, false, index);
@@ -942,11 +1122,29 @@ const HELP_CARD = {
     contenido: `<p>Ficha completa: cotizacion, fundamentales, historico, valoracion y nota.</p>
       <ul>
         <li><b>Busqueda</b> — nombre o ticker. Europeos sondeados aparte.</li>
-        <li><b>Nota 1-10</b> — sintetiza seis pilares segun tu perfil inversor.</li>
+        <li><b>Nota 1-10</b> — sintetiza siete pilares segun tu perfil inversor.</li>
+        <li><b>Revision de Claude</b> — si se la pides, suma o resta hasta 2 puntos, con motivo y fuentes y siempre a la vista.</li>
         <li><b>Fundamentales</b> — PER, EV/EBITDA, margen, ROE, dividendo.</li>
         <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles.</li>
         <li><b>Valoracion</b> — DCF con sensibilidad + Graham.</li>
+        <li><b>Resultados trimestrales</b> — los 3 ultimos trimestres, de donde sale el pilar de resultados.</li>
       </ul>`,
+  },
+  trimestres: {
+    titulo: "Resultados trimestrales",
+    contenido: `<p>Los tres ultimos trimestres fiscales publicados, no el ultimo ano entero.
+      Es la base del pilar <b>Resultados recientes</b> (15 de los 100 puntos de la nota).</p>
+      <ul>
+        <li><b>Interanual</b> — cada trimestre frente al <b>mismo</b> trimestre del ano
+          anterior, para que no salga el efecto de la estacionalidad.</li>
+        <li><b>—</b> — ese dato no lo publica la empresa. No se rellena con estimaciones.</li>
+        <li><b>Margen</b> — beneficio neto sobre ventas, en puntos porcentuales.</li>
+        <li><b>Aviso en ambar</b> — faltan trimestres o hay un hueco: la nota se apoya en
+          menos datos y lo dice.</li>
+      </ul>
+      <p>Fuera de EE. UU. los datos llegan incompletos con frecuencia (Inditex y Banco
+        Santander no publican flujo de caja trimestral). La cobertura de cada mercado se
+        comprueba antes de fiarse de la tendencia.</p>`,
   },
   recomendaciones: {
     titulo: "Recomendaciones",
@@ -1098,6 +1296,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-refrescar-cartera").addEventListener("click", () => loadPortfolio());
   document.getElementById("btn-actualizar-recomendaciones").addEventListener("click", () => loadRecommendations());
+  document.getElementById("btn-exportar-json").addEventListener("click", () => exportar("json"));
+  document.getElementById("btn-exportar-csv").addEventListener("click", () => exportar("csv"));
 
   // Botones ? y links data-help → card emergente
   document.addEventListener("click", (e) => {

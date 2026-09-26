@@ -9,6 +9,7 @@ Optional keys via environment variables (improve reliability if Yahoo fails):
   FINNHUB_API_KEY, FMP_API_KEY
 """
 
+import calendar
 import http.cookiejar
 import json
 import math
@@ -18,7 +19,7 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import scoring
 from mcp_common import MCPServer, log
@@ -870,6 +871,165 @@ def earnings_calendar(ticker):
     return {"ticker": ticker.upper(), "upcoming_earnings_dates": dates, "history": history}
 
 
+# ------------------------------------------------------------------- quarterly
+
+QUARTERLY_TYPES = (
+    "quarterlyTotalRevenue,quarterlyNetIncome,quarterlyOperatingIncome,"
+    "quarterlyDilutedEPS,quarterlyFreeCashFlow"
+)
+QUARTERLY_FIELDS = {
+    "quarterlyTotalRevenue": "revenue",
+    "quarterlyNetIncome": "net_income",
+    "quarterlyOperatingIncome": "operating_income",
+    "quarterlyDilutedEPS": "diluted_eps",
+    "quarterlyFreeCashFlow": "free_cash_flow",
+}
+
+
+def _quarter_rows(payload):
+    """Yahoo fundamentals-timeseries payload -> one row per period, newest first."""
+    rows = {}
+    for item in (payload.get("timeseries") or {}).get("result") or []:
+        for yahoo_key, field in QUARTERLY_FIELDS.items():
+            for entry in item.get(yahoo_key) or []:
+                if not entry or not entry.get("asOfDate"):
+                    continue
+                row = rows.setdefault(
+                    entry["asOfDate"],
+                    dict({"period_end": entry["asOfDate"]},
+                         **{f: None for f in QUARTERLY_FIELDS.values()}),
+                )
+                row[field] = _num(entry.get("reportedValue"))
+                row["currency"] = entry.get("currencyCode") or row.get("currency")
+    return [rows[d] for d in sorted(rows, reverse=True)]
+
+
+def _yoy_pct(value, base):
+    """Year-over-year in percent. None when the base quarter is missing or not positive:
+    growth over a loss is not a number."""
+    if value is None or base is None or base <= 0:
+        return None
+    return round((value / base - 1) * 100, 2)
+
+
+def _day(period_end):
+    return datetime.strptime(period_end, "%Y-%m-%d").date()
+
+
+def _month_end(ym):
+    """'2026-01' -> '2026-01-31': the last day of a slot Yahoo never reported."""
+    return f"{ym}-{calendar.monthrange(int(ym[:4]), int(ym[5:7]))[1]:02d}"
+
+
+def _prior_year(rows, period_end):
+    """The same fiscal quarter a year earlier, within 30 days: retail calendars move
+    the closing date a few days every year."""
+    target = _day(period_end) - timedelta(days=365)
+    best, best_gap = None, 31
+    for row in rows:
+        gap = abs((_day(row["period_end"]) - target).days)
+        if gap < best_gap:
+            best, best_gap = row, gap
+    return best
+
+
+def quarterly_derive(rows, ticker=None):
+    """Pure shaping of raw quarters into the quarterly() result, no network.
+
+    'quarters' are the last three fiscal slots, stepping back three months from the
+    newest close. A slot Yahoo never reported is simply absent: that is what 'available'
+    counts and 'gaps' explains.
+    """
+    rows = sorted(rows or [], key=lambda r: r["period_end"], reverse=True)
+    by_month, slots = {}, []
+    if rows:
+        for row in rows:
+            by_month.setdefault(row["period_end"][:7], row)
+        year, month = int(rows[0]["period_end"][:4]), int(rows[0]["period_end"][5:7])
+        for back in range(3):
+            total = year * 12 + (month - 1) - 3 * back
+            slots.append(f"{total // 12:04d}-{total % 12 + 1:02d}")
+    expected = [(slot, by_month.get(slot)) for slot in slots]
+
+    quarters = []
+    for _slot, row in expected:
+        if not row:
+            continue
+        base = _prior_year(rows, row["period_end"]) or {}
+        quarter = dict(row)
+        quarter["revenue_yoy_pct"] = _yoy_pct(row.get("revenue"), base.get("revenue"))
+        quarter["eps_yoy_pct"] = _yoy_pct(row.get("diluted_eps"), base.get("diluted_eps"))
+        quarter["net_income_yoy_pct"] = _yoy_pct(row.get("net_income"), base.get("net_income"))
+        revenue = row.get("revenue")
+        quarter["net_margin_pct"] = (
+            round(row["net_income"] / revenue * 100, 2)
+            if revenue and row.get("net_income") is not None
+            else None
+        )
+        quarters.append(quarter)
+
+    # A hole is a fiscal slot Yahoo never reported: bracket it with the reported
+    # quarters on each side, or with the slot's own month end when it has none below.
+    gaps, above = [], None
+    for i, (slot, row) in enumerate(expected):
+        if row is None:
+            below = next((r for _, r in expected[i + 1:] if r), None)
+            if above:
+                gaps.append([below["period_end"] if below else _month_end(slot), above["period_end"]])
+        else:
+            above = row
+    available = len(quarters)
+    missing = [f for f in QUARTERLY_FIELDS.values() if all(q.get(f) is None for q in quarters)]
+    if available == 0:
+        note = f"Sin datos trimestrales publicos para {ticker}."
+    elif available < 3:
+        detail = f": hueco entre {gaps[0][0]} y {gaps[0][1]}" if gaps else ""
+        note = f"Solo {available} de 3 trimestres disponibles{detail}."
+    else:
+        note = "3 de 3 trimestres disponibles."
+    return {
+        "ticker": ticker,
+        "quarters": quarters,
+        "available": available,
+        "missing_fields": missing,
+        "gaps": gaps,
+        "note_es": note,
+    }
+
+
+@srv.tool(
+    "quarterly",
+    "Last fiscal quarters: revenue, net income, operating income, diluted EPS and free "
+    "cash flow, with year-over-year comparisons. Holes and missing fields are reported, "
+    "never filled.",
+    {"ticker": {"type": "string"}},
+    required=["ticker"],
+)
+def quarterly(ticker):
+    ticker = ticker.upper().strip()
+    now = int(time.time())
+    url = (
+        "https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/"
+        f"{urllib.parse.quote(ticker)}?symbol={urllib.parse.quote(ticker)}"
+        f"&type={QUARTERLY_TYPES}&period1={now - 900 * 86400}&period2={now}"
+    )
+    try:
+        payload = _get_json(url)
+    except Exception as exc:  # noqa: BLE001 - a hole in the data never breaks the caller
+        return {"ticker": ticker, "error": str(exc)}
+    result = quarterly_derive(_quarter_rows(payload), ticker)
+    # EPS surprise vs consensus, last 3. Separate quoteSummary call; the scoring pillar
+    # skips the metric when it's missing, so a failure here is not fatal.
+    try:
+        result["earnings_surprise_pct"] = [
+            h["surprise_pct"] for h in earnings_calendar(ticker).get("history", [])[:3]
+            if h.get("surprise_pct") is not None
+        ]
+    except Exception:  # noqa: BLE001
+        result["earnings_surprise_pct"] = []
+    return result
+
+
 # ------------------------------------------------------------------- valuation
 
 
@@ -1172,11 +1332,16 @@ def stock_score(ticker, risk_tolerance=None, horizon=None, preference=None):
         graham = graham_valuation(ticker=ticker)
     except Exception:  # noqa: BLE001 - optional input
         graham = None
+    try:
+        recent = quarterly(ticker)
+    except Exception:  # noqa: BLE001 - results pillar just skips
+        recent = {}
 
     profile = {k: v for k, v in {
         "risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference,
     }.items() if v}
-    return scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile or None)
+    return scoring.score_stock(q, f, h, dcf=dcf, graham=graham, profile=profile or None,
+                               quarterly=recent)
 
 
 if __name__ == "__main__":

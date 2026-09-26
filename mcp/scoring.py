@@ -3,19 +3,20 @@
 input is a plain dict already fetched by the caller (mercado_server.stock_score or
 app/servidor.py's stock_detail).
 
-Sources behind the six pillars: Buffett (ROE, low debt), Graham (defensive
+Sources behind the seven pillars: Buffett (ROE, low debt), Graham (defensive
 criteria), Lynch (PEG), Greenblatt (earnings yield spirit via EV/EBITDA and ROIC
 proxies), Piotroski (profitability + leverage signals), AQR quality-minus-junk
-(margins, ROA), Jegadeesh-Titman (price momentum). Analyst consensus is used only
+(margins, ROA), Jegadeesh-Titman (price momentum) and the last fiscal quarters
+(recent results, not the last full year). Analyst consensus is used only
 as a weak tiebreak in valuation because sell-side targets skew optimistic.
 
 NOT investment advice: fixed rules over public data, nothing more.
 """
 
 BASE_WEIGHTS = {
-    "moderate":     {"quality": 25, "valuation": 25, "health": 15, "growth": 15, "momentum": 15, "dividend": 5},
-    "conservative": {"quality": 25, "valuation": 20, "health": 25, "growth": 10, "momentum": 5,  "dividend": 15},
-    "aggressive":   {"quality": 20, "valuation": 20, "health": 10, "growth": 25, "momentum": 25, "dividend": 0},
+    "moderate":     {"quality": 25, "valuation": 25, "health": 15, "growth": 8,  "momentum": 7,  "results": 15, "dividend": 5},
+    "conservative": {"quality": 25, "valuation": 20, "health": 25, "growth": 5,  "momentum": 5,  "results": 10, "dividend": 10},
+    "aggressive":   {"quality": 20, "valuation": 20, "health": 10, "growth": 15, "momentum": 20, "results": 15, "dividend": 0},
 }
 
 PILLAR_NAMES_ES = {
@@ -24,6 +25,7 @@ PILLAR_NAMES_ES = {
     "health": "Solidez financiera",
     "growth": "Crecimiento",
     "momentum": "Momentum",
+    "results": "Resultados recientes",
     "dividend": "Dividendo",
 }
 
@@ -245,6 +247,68 @@ def _dividend(f, preference):
     return _combine(pairs), details
 
 
+def _results(q):
+    """Recent results: the last fiscal quarters, not the last full year.
+
+    `q` is the quarterly() result (or {}). Every metric skips itself when its data
+    is missing, so a company with 2 of 3 quarters still gets a partial pillar.
+    """
+    q = q or {}
+    quarters = [x for x in (q.get("quarters") or []) if x]
+    details, pairs = [], []
+    if not quarters:
+        return None, details  # available == 0: pillar excluded, weight redistributed
+
+    rev = [x["revenue_yoy_pct"] for x in quarters if x.get("revenue_yoy_pct") is not None]
+    if rev:
+        v = round(sum(rev) / len(rev), 2)
+        s = _lin(v, -5, 15)
+        pairs.append((s, 1.0))
+        details.append(_detail("rev_yoy_avg", "Ventas (interanual)", v, s, "%"))
+
+    # BPA when reported, net income otherwise: same idea, one metric either way.
+    eps = [x.get("eps_yoy_pct") if x.get("eps_yoy_pct") is not None else x.get("net_income_yoy_pct")
+           for x in quarters]
+    eps = [v for v in eps if v is not None]
+    if eps:
+        v = round(sum(eps) / len(eps), 2)
+        s = _lin(v, -10, 20)
+        pairs.append((s, 1.0))
+        details.append(_detail("eps_yoy_avg", "Beneficio (interanual)", v, s, "%"))
+
+    margins = [x["net_margin_pct"] for x in quarters if x.get("net_margin_pct") is not None]
+    if len(margins) >= 2:  # newest minus oldest, quarters arrive newest first
+        v = round(margins[0] - margins[-1], 2)
+        s = _lin(v, -3, 3)
+        pairs.append((s, 1.0))
+        details.append(_detail("margin_trend", "Margen neto: del mas nuevo al mas viejo", v, s, " p.p."))
+
+    revs = [x.get("revenue") for x in quarters]
+    steps = [(new, old) for new, old in zip(revs, revs[1:]) if new is not None and old is not None]
+    if steps:
+        v = round(sum(1 for new, old in steps if new > old) / len(steps), 2)
+        s = _lin(v, 0, 1)
+        pairs.append((s, 1.0))
+        details.append(_detail("consistency", "Trimestres con ventas al alza", v, s, fmt="{:.0%}"))
+
+    surprise = [v for v in (q.get("earnings_surprise_pct") or []) if v is not None]
+    if surprise:
+        v = round(sum(surprise) / len(surprise), 2)
+        s = _lin(v, -5, 5)
+        pairs.append((s, 1.0))
+        details.append(_detail("surprise", "Sorpresa del BPA", v, s, "%"))
+
+    if (q.get("available") or len(quarters)) < 3:
+        # points 0: this line explains the pillar, it must not move it.
+        details.insert(0, {
+            "metric": "quarters_available",
+            "value": q.get("available") or len(quarters),
+            "points": 0.0,
+            "reason_es": "Datos de menos de 3 trimestres: el pilar se calcula con lo que hay",
+        })
+    return _combine(pairs), details
+
+
 # --------------------------------------------------------------------- weights
 
 
@@ -280,7 +344,30 @@ def _adjust_weights(risk_tolerance, horizon, preference):
 # ----------------------------------------------------------------------- main
 
 
-def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=None, holding=None):
+def _label_for(score, holding=False):
+    """UI label for a 1-10 score. A position already owned reads differently: the
+    question is no longer "should I buy" but "should I keep it"."""
+    if holding:
+        if score >= 8:
+            return "Mantener o ampliar"
+        if score >= 5:
+            return "Mantener"
+        if score >= 3:
+            return "Vigilar / reducir"
+        return "Considerar vender"
+    if score >= 9:
+        return "Compra fuerte"
+    if score >= 7:
+        return "Compra moderada"
+    if score >= 5:
+        return "Neutral / esperar"
+    if score >= 3:
+        return "Evitar"
+    return "Evitar claramente"
+
+
+def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=None,
+                holding=None, quarterly=None):
     profile = profile or {}
     risk_tolerance = profile.get("risk_tolerance", "moderate")
     horizon = profile.get("horizon", "long")
@@ -296,6 +383,7 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
         "health": _health(f),
         "growth": _growth(f),
         "momentum": _momentum(historical, price),
+        "results": _results(quarterly),
         "dividend": _dividend(f, preference),
     }
 
@@ -342,34 +430,41 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
     if price_below_200 and rev_growth is not None and rev_growth < 0 and earn_growth is not None and earn_growth < 0:
         red_flags.append("Precio bajo la media de 200 sesiones con ventas y beneficio cayendo: tendencia bajista de fondo.")
 
+    q = quarterly or {}
+    quarters = [x for x in (q.get("quarters") or []) if x]
+    quarters_available = q.get("available")
+    if quarters_available is None:
+        quarters_available = len(quarters)
+    rev_yoy = [x.get("revenue_yoy_pct") for x in quarters]
+    rev_yoy_known = [v for v in rev_yoy if v is not None]
+    # Needs all three quarters with revenue data: a hole is not evidence of decline.
+    if len(quarters) == 3 and len(rev_yoy_known) == 3:
+        _results_details = _results(q)[1]
+        margin_trend = next(
+            (d["value"] for d in _results_details if d["metric"] == "margin_trend"), None
+        )
+        if all(v < 0 for v in rev_yoy_known) and margin_trend is not None and margin_trend < 0:
+            red_flags.append(
+                "Ventas cayendo interanualmente en los tres trimestres y con el margen neto a la baja: "
+                "deterioro constante."
+            )
+
     if red_flags:
         score = min(score, 3)
+
+    notice = NOTICE
+    if quarters_available < 3:
+        notice += (
+            f" Ademas, la nota se apoya en {quarters_available} de 3 trimestres fiscales"
+            + (f" ({q['note_es']})" if q.get("note_es") else "")
+            + "."
+        )
 
     pros = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] > 0]
     cons = [d["reason_es"] for p in pillars for d in p["details"] if d["points"] < 0]
 
     sentiment = "verde" if score >= 7 else "rojo" if score <= 3 else "ambar"
-
-    if holding:
-        if score >= 8:
-            label = "Mantener o ampliar"
-        elif score >= 5:
-            label = "Mantener"
-        elif score >= 3:
-            label = "Vigilar / reducir"
-        else:
-            label = "Considerar vender"
-    else:
-        if score >= 9:
-            label = "Compra fuerte"
-        elif score >= 7:
-            label = "Compra moderada"
-        elif score >= 5:
-            label = "Neutral / esperar"
-        elif score >= 3:
-            label = "Evitar"
-        else:
-            label = "Evitar claramente"
+    label = _label_for(score, holding=bool(holding))
 
     coverage_warning = (
         f"Cobertura de datos baja ({coverage_pct:.0f}%): la nota se apoya en pocos "
@@ -387,10 +482,51 @@ def score_stock(quote, fundamentals, historical, dcf=None, graham=None, profile=
         "red_flags": red_flags,
         "coverage_pct": coverage_pct,
         "coverage_warning": coverage_warning,
+        "is_holding": bool(holding),
+        "quarters_available": quarters_available,
+        "quarters_note_es": q.get("note_es"),
         "weights": {k: round(v, 1) for k, v in weights.items()},
         "profile": {"risk_tolerance": risk_tolerance, "horizon": horizon, "preference": preference},
-        "notice": NOTICE,
+        "notice": notice,
     }
+
+
+# ------------------------------------------------------------------- revisions
+
+
+def apply_review(score_result, review):
+    """Final score = mechanical score + Claude's bounded adjustment.
+
+    Pure. `review` is a score_reviews row (or None). An expired or stale review is not
+    applied, only reported, so a decision made on old data can't move today's score.
+    The red_flags cap applies AFTER the adjustment: a review never buys its way out
+    of a warning.
+
+    Returns a new dict: {score, final_score, label, sentiment, review, review_applied}.
+    """
+    out = {
+        "score": score_result["score"],
+        "final_score": score_result["score"],
+        "label": score_result["label"],
+        "sentiment": score_result["sentiment"],
+        "review": review,
+        "review_applied": False,
+    }
+    if not review:
+        return out
+
+    out["review_applied"] = review.get("status") == "active"
+    if not out["review_applied"]:
+        return out
+
+    final = max(1.0, min(10.0, round(score_result["score"] + float(review["adjustment"]), 1)))
+    if score_result.get("red_flags"):
+        final = min(final, 3.0)
+    rating = int(max(1, min(10, round(final))))
+    out["final_score"] = final
+    out["label"] = _label_for(rating, holding=score_result.get("is_holding"))
+    out["sentiment"] = "verde" if rating >= 7 else "rojo" if rating <= 3 else "ambar"
+    return out
 
 
 # ------------------------------------------------------------ recomendaciones
@@ -407,7 +543,10 @@ def position_advice(score_result, weight_pct, pnl_pct, profile):
     profile = profile or {}
     risk_tolerance = profile.get("risk_tolerance", "moderate")
     limit = CONCENTRATION_LIMITS.get(risk_tolerance, CONCENTRATION_LIMITS["moderate"])
-    score = (score_result or {}).get("score")
+    # final_score = mechanical + Claude's review, so decisions follow what the user sees.
+    score = (score_result or {}).get("final_score")
+    if score is None:
+        score = (score_result or {}).get("score")
     over_limit = weight_pct is not None and weight_pct > limit
 
     reasons = []
@@ -437,11 +576,12 @@ def position_advice(score_result, weight_pct, pnl_pct, profile):
 def select_ideas(candidates, held_tickers, held_sectors, min_score=7):
     """Rank not-held candidates into "new ideas": pure filter + sort, no I/O.
 
-    `candidates`: iterable of dicts with at least ticker/score/coverage_pct, optionally
-    sector (as scored by mercado_server.stock_score / app.servidor._score_ticker).
-    Excludes held tickers, coverage_pct < 50 and score < min_score. Sorted by score
-    desc, then coverage_pct desc. Tags `diversifies: true` when the sector isn't
-    among a non-empty `held_sectors` (with no holdings every idea would "diversify").
+    `candidates`: iterable of dicts with at least ticker/final_score (or score) and
+    coverage_pct, optionally sector (as scored by mercado_server.stock_score /
+    app.servidor._score_ticker). Excludes held tickers, coverage_pct < 50 and
+    final_score < min_score. Sorted by final_score desc, then coverage_pct desc. Tags
+    `diversifies: true` when the sector isn't among a non-empty `held_sectors` (with no
+    holdings every idea would "diversify").
     """
     held_tickers = {t.upper() for t in (held_tickers or []) if t}
     held_sectors = {s for s in (held_sectors or []) if s}
@@ -449,7 +589,10 @@ def select_ideas(candidates, held_tickers, held_sectors, min_score=7):
     ideas = []
     for c in candidates or []:
         ticker = (c.get("ticker") or "").upper()
-        score, coverage = c.get("score"), c.get("coverage_pct")
+        score = c.get("final_score")
+        if score is None:
+            score = c.get("score")
+        coverage = c.get("coverage_pct")
         if not ticker or ticker in held_tickers:
             continue
         if score is None or score < min_score:
@@ -458,8 +601,9 @@ def select_ideas(candidates, held_tickers, held_sectors, min_score=7):
             continue
         idea = dict(c)
         idea["ticker"] = ticker
+        idea["final_score"] = score
         idea["diversifies"] = bool(held_sectors) and bool(c.get("sector")) and c.get("sector") not in held_sectors
         ideas.append(idea)
 
-    ideas.sort(key=lambda c: (-c["score"], -(c.get("coverage_pct") or 0)))
+    ideas.sort(key=lambda c: (-c["final_score"], -(c.get("coverage_pct") or 0)))
     return ideas
