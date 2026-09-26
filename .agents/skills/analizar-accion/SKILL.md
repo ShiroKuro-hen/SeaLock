@@ -49,6 +49,21 @@ guardada en la watchlist: es lo que permite ver si la tesis sigue viva o se romp
 la posicion como `holding` si vuelves a llamar a `score_stock` directamente (la nota
 cambia de "Compra fuerte" a "Mantener o ampliar", etc.).
 
+**6. Revisar la nota, si el analisis aporta algo que las reglas fijas no ven.** Las
+reglas solo miran numeros. Si aqui hay hechos concretos que la nota mecanica no recoge
+(un trimestre que rompe la tendencia, un cambio de CEO o de guia, una demanda o
+regulacion con impacto, tension con un proveedor), propone un ajuste acotado a +-2
+puntos y guardalo con `finance.review_set`, pasando la nota mecanica en
+`mechanical_score` y el ultimo cierre trimestral que has mirado en `last_quarter_seen`:
+
+- `rationale` cita **hechos concretos** que se pueden comprobar, no opiniones ("el BPA
+  del Q2 subio 40% con un tipo de cambio favorable", no "me parece mejor").
+- `sources` son URLs http(s) de donde salen esos hechos.
+- Muestra el ajuste al usuario junto a la nota mecanica: la nota siempre visible, el
+  ajuste al lado.
+- Sin hechos nuevos que anadir, no propongas ajuste. Mejor no guardar nada que guardar
+  relleno.
+
 ## Formato de salida
 
 ```

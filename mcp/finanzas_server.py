@@ -4,10 +4,11 @@ local SQLite.
 Everything lives in datos/finanzas.db inside this folder. Nothing goes to the internet.
 """
 
+import json
 import os
 import sqlite3
 from contextlib import closing, contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from mcp_common import MCPServer, log
 
@@ -51,7 +52,21 @@ CREATE TABLE IF NOT EXISTS profile (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS score_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    adjustment REAL NOT NULL,
+    rationale TEXT NOT NULL,
+    sources TEXT NOT NULL DEFAULT '[]',
+    mechanical_score REAL,
+    last_quarter_seen TEXT,
+    expires_at TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'claude'
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
+CREATE INDEX IF NOT EXISTS idx_score_reviews_ticker ON score_reviews(ticker);
 """
 
 
@@ -385,13 +400,144 @@ def watchlist_remove(ticker):
     return {"ok": cur.rowcount > 0, "ticker": ticker.upper().strip()}
 
 
+# --------------------------------------------------------------------- reviews
+
+MAX_ADJUSTMENT = 2.0
+MAX_RATIONALE = 2000
+
+
+def review_status(review, latest_quarter_end=None):
+    """'active', 'expired' or 'stale'. Pure: the newest quarter is passed in because
+    this server has no network to fetch it itself."""
+    if review.get("expires_at") and review["expires_at"] < date.today().isoformat():
+        return "expired"
+    seen, latest = review.get("last_quarter_seen"), latest_quarter_end
+    if seen and latest and latest > seen:
+        return "stale"
+    return "active"
+
+
+def _review_row(row, latest_quarter_end=None):
+    review = dict(row)
+    review["sources"] = json.loads(review["sources"] or "[]")
+    review["status"] = review_status(review, latest_quarter_end)
+    return review
+
+
+@srv.tool(
+    "review_set",
+    "Store a Claude review of a stock's mechanical score: a bounded adjustment (+-"
+    f"{MAX_ADJUSTMENT:g}) with its rationale and sources. A newer review for the same "
+    "ticker becomes the current one; the previous stays as history.",
+    {
+        "ticker": {"type": "string"},
+        "adjustment": {"type": "number", "description": f"-{MAX_ADJUSTMENT:g}..{MAX_ADJUSTMENT:g}"},
+        "rationale": {"type": "string", "description": "Why, citing concrete facts"},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "mechanical_score": {"type": "number", "description": "Score before adjusting"},
+        "last_quarter_seen": {
+            "type": "string",
+            "description": "Newest quarter close the review looked at (YYYY-MM-DD)",
+        },
+        "expires_days": {"type": "integer", "default": 30},
+    },
+    required=["ticker", "adjustment", "rationale"],
+)
+def review_set(ticker, adjustment, rationale, sources=None, mechanical_score=None,
+               last_quarter_seen=None, expires_days=30):
+    ticker = ticker.upper().strip()
+    try:
+        adjustment = float(adjustment)
+    except (TypeError, ValueError):
+        raise ValueError(f"adjustment must be a number between -{MAX_ADJUSTMENT:g} and {MAX_ADJUSTMENT:g}")
+    if not -MAX_ADJUSTMENT <= adjustment <= MAX_ADJUSTMENT:
+        raise ValueError(f"adjustment must be between -{MAX_ADJUSTMENT:g} and {MAX_ADJUSTMENT:g}")
+    rationale = (rationale or "").strip()
+    if not rationale or len(rationale) > MAX_RATIONALE:
+        raise ValueError(f"rationale must be 1-{MAX_RATIONALE} characters")
+    sources = list(sources or [])
+    for source in sources:
+        if not isinstance(source, str) or not source.startswith(("http://", "https://")):
+            raise ValueError(f"every source must be an http(s) URL, got: {source!r}")
+    days = int(expires_days)
+    if days < 0:
+        raise ValueError("expires_days must be 0 or more")
+    today = date.today()
+    with db() as cx:
+        cur = cx.execute(
+            """INSERT INTO score_reviews (ticker, created_at, adjustment, rationale,
+                                          sources, mechanical_score, last_quarter_seen, expires_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (ticker, today.isoformat(), adjustment, rationale, json.dumps(sources),
+             None if mechanical_score is None else float(mechanical_score),
+             validate_date(last_quarter_seen, default_today=False),
+             (today + timedelta(days=days)).isoformat()),
+        )
+        row = cx.execute("SELECT * FROM score_reviews WHERE id=?", (cur.lastrowid,)).fetchone()
+    return {"ok": True, "review": _review_row(row)}
+
+
+@srv.tool(
+    "review_get",
+    "The current review for a ticker (its most recent one) with its status, or null.",
+    {
+        "ticker": {"type": "string"},
+        "latest_quarter_end": {
+            "type": "string",
+            "description": "Newest quarter close available, to flag stale reviews",
+        },
+    },
+    required=["ticker"],
+)
+def review_get(ticker, latest_quarter_end=None):
+    ticker = ticker.upper().strip()
+    with db() as cx:
+        row = cx.execute(
+            "SELECT * FROM score_reviews WHERE ticker=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    return {
+        "ticker": ticker,
+        "review": _review_row(row, latest_quarter_end) if row else None,
+    }
+
+
+@srv.tool(
+    "reviews_list",
+    "Every stored score review, newest first, each with its status.",
+    {"latest_quarter_end": {"type": "string"}},
+)
+def reviews_list(latest_quarter_end=None):
+    with db() as cx:
+        data = rows(cx.execute("SELECT * FROM score_reviews ORDER BY created_at DESC, id DESC"))
+    return {"reviews": [_review_row(r, latest_quarter_end) for r in data]}
+
+
+@srv.tool(
+    "review_delete",
+    "Delete a review by id. Without confirm it only returns the record, so it can be "
+    "shown before anything is removed.",
+    {"id": {"type": "integer"}, "confirm": {"type": "boolean", "default": False}},
+    required=["id"],
+)
+def review_delete(id, confirm=False):
+    with db() as cx:
+        row = cx.execute("SELECT * FROM score_reviews WHERE id=?", (int(id),)).fetchone()
+        if row is None:
+            return {"ok": False, "error": f"No review with id {id}"}
+        if not confirm:
+            return {"ok": False, "needs_confirmation": True, "review": _review_row(row)}
+        cx.execute("DELETE FROM score_reviews WHERE id=?", (int(id),))
+    return {"ok": True, "deleted": _review_row(row)}
+
+
 # ------------------------------------------------------------------------- SQL
 
 
 @srv.tool(
     "sql_query",
     "Run a read-only SELECT query against the database, for analysis not covered "
-    "by the other tools. Tables: trades, watchlist, profile.",
+    "by the other tools. Tables: trades, watchlist, profile, score_reviews.",
     {
         "sql": {"type": "string", "description": "Must start with SELECT or WITH"},
         "limit": {"type": "integer", "default": 200},
