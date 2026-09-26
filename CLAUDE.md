@@ -57,6 +57,13 @@ SeaLock: 225 nodos, 886 aristas. Excluye `datos/`. Cache en `~/.cache/codebase-m
 
 - Fechas: `AAAA-MM-DD`. Moneda: EUR (cambiable con `SEALOCK_CURRENCY` en `.mcp.json`).
 - Tickers formato Yahoo: `AAPL`, `MSFT`, `ITX.MC`, `SAN.MC`, `VWCE.DE`.
+- **Broker por operacion**: `trades.broker` es una etiqueta de la lista fija `BROKERS`
+  (`HapiBroker`, `ETF`, `Fondo mutuo`, `Otro`) que dice donde ejecutaste la operacion.
+  `trades.uploaded_at` marca cuando la copiaste a la plataforma a mano.
+  `trades_pending()` lista lo que falta por broker, `trades_mark_uploaded()` lo marca, y
+  `app/config` lo devuelve para el aviso al abrir la app. **SeaLock no envia nada a
+  ningun broker** (§ Principios): es una lista de trabajo, no una integracion. Anadir
+  brokers = tocar `BROKERS` y el `<select>` del formulario.
 - Perfil inversor: `risk_tolerance` (conservative/moderate/aggressive), `horizon`
   (short/medium/long), `preference` (dividend/growth/balanced). Fila unica en la
   tabla `profile`, gestionada con `profile_get`/`profile_set`.

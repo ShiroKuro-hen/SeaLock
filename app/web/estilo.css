@@ -302,6 +302,16 @@ button.peligro:hover { border-color: var(--rojo); color: var(--rojo); }
 .trimestres-grafico { display: flex; align-items: flex-end; gap: 10px; margin: 4px 0 14px; }
 .trimestres-grafico svg { display: block; }
 
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  align-self: end;
+  padding-bottom: 9px;
+  font-size: 13px;
+}
+label.check input { width: auto; margin: 0; }
+
 .revision {
   border: 1px solid var(--borde);
   border-left: 3px solid var(--acento);

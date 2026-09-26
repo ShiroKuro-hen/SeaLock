@@ -261,6 +261,30 @@ try:
     code, r = call("/api/finance/review_get", {"ticker": "AAPL"})
     check("tras confirmar, la revision ya no esta", r["data"].get("review") is None, str(r)[:200])
 
+    # --- broker: donde se ejecuto y pendientes de subir (HapiBroker) ---
+    code, r = call("/api/finance/trade_create",
+                   {"ticker": "VOO", "action": "buy", "quantity": 1, "price": 500,
+                    "currency": "USD", "broker": "HapiBroker"})
+    check("trade_create con broker via API", code == 200 and r["data"]["broker"] == "HapiBroker",
+          str(r)[:200])
+    code, r = call("/api/finance/trade_create",
+                   {"ticker": "AAPL", "action": "buy", "quantity": 1, "price": 150,
+                    "broker": "NoExiste"})
+    check("broker invalido via API devuelve 400", code == 400, str(r)[:200])
+
+    code, r = call("/api/finance/trades_pending", {})
+    check("trades_pending responde con el desglose por broker",
+          code == 200 and "HapiBroker" in r["data"]["by_broker"], str(r)[:200])
+
+    code, r = call("/api/app/config", {})
+    cfg = r["data"]
+    check("config expone la lista de brokers y los pendientes de cada uno",
+          "HapiBroker" in cfg.get("brokers", []) and "HapiBroker" in cfg.get("pending_by_broker", {}),
+          str(cfg)[:200])
+
+    code, r = call("/api/finance/trades_mark_uploaded", {"broker": "HapiBroker"})
+    check("trades_mark_uploaded via API", code == 200 and r["data"]["marked"] >= 1, str(r)[:200])
+
     # --- exportacion (HU-28) ---
     code, r = call("/api/app/export_all", {})
     exp = r["data"] if code == 200 else {}

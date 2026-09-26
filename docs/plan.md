@@ -3,7 +3,7 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-06, HU-07, HU-08, HU-09 y HU-28. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
+HU-04, HU-06, HU-07, HU-08, HU-09, HU-28 y HU-31. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
 (Hidden Gems) siguen enteras.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
@@ -621,6 +621,24 @@ tener copia fuera de SeaLock.
 **Como** inversor, **quiero** ver la evolucion del valor total y la plusvalia, **para** ver
 mi progreso.
 - [ ] Linea temporal SVG con valor total en moneda base y plusvalia; respeta HU-26.
+
+### [x] HU-31 — Broker por operacion y pendientes de subir (S)
+**Como** inversor, **quiero** anotar en que broker he hecho cada operacion y ver lo que me
+falta por copiar a la plataforma, **para** no buscar una operacion donde no esta.
+- [x] `trades.broker` con lista fija `BROKERS` (`HapiBroker`, `ETF`, `Fondo mutuo`,
+      `Otro`) y `<select>` en el formulario; `portfolio_view` devuelve `brokers` por
+      posicion y la tabla de Cartera lo muestra.
+- [x] `trades.uploaded_at` + casilla "Ya esta en el broker" al registrar, tools
+      `trades_pending()` (agrupado por broker) y `trades_mark_uploaded()`.
+- [x] Al abrir la app, `app/config` expone los pendientes y Cartera avisa con un boton
+      "Marcar todo como subido".
+- [x] Migracion en sitio: `_add_missing_columns()` anade las columnas a las bases
+      existentes en cada `connect()` (no hay tabla de versiones; son dos columnas).
+- [x] Tests en `prueba_humo.py` (8) y `prueba_web.py` (4).
+
+Nota: pedida fuera del plan. **SeaLock no manda nada a Hapi ni a ninguna plataforma**
+(§ Principios): `uploaded_at` es lo que tu marcas a mano, no un envio. Si algun dia se
+quiere sincronizar de verdad, es HU-27 y requiere decision expresa.
 
 ### [ ] HU-30 — Comparador de acciones (M)
 **Como** inversor, **quiero** comparar varias acciones lado a lado, **para** elegir entre ellas.

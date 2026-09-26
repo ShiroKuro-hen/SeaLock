@@ -228,8 +228,9 @@ const today = () => new Date().toISOString().slice(0, 10);
 function formData(form) {
   const d = {};
   for (const [k, v] of new FormData(form).entries()) {
-    if (v === "" || v === null) continue;
     const el = form.elements[k];
+    if (el && el.type === "checkbox") { d[k] = el.checked; continue; }
+    if (v === "" || v === null) continue;
     d[k] = el && el.type === "number" ? Number(v) : v;
   }
   return d;
@@ -244,6 +245,35 @@ function renderError(id, e) {
 }
 
 /* ------------------------------------------------------------- perfil inversor */
+
+/* ------------------------------------------------------- pendientes del broker */
+
+/** Lo que aun no has copied al broker, por broker. SeaLock no manda nada: esto es una
+ *  lista de trabajo tuya. Se carga al abrir la app y al entrar en Cartera. */
+async function loadPendientes() {
+  const cont = document.getElementById("pendientes-broker");
+  if (!cont) return;
+  try {
+    const d = await api("finance", "trades_pending");
+    const grupos = Object.entries(d.by_broker || {});
+    if (!grupos.length) {
+      cont.innerHTML = "";
+      return;
+    }
+    cont.innerHTML = `<b>Pendientes de copiar al broker: ${d.pending}</b> ` + grupos.map(
+      ([k, v]) => `<span class="rec-badge">${esc(k)}: ${v.count}</span>`).join(" ") +
+      `<div class="tenue" style="font-size:12px;margin-top:4px">SeaLock no envia nada a
+        ninguna plataforma: esto es solo tu lista de trabajo.</div>
+       <button id="btn-marcar-subido" style="margin-top:8px">Marcar todo como subido</button>`;
+    document.getElementById("btn-marcar-subido").addEventListener("click", async () => {
+      const r = await api("finance", "trades_mark_uploaded", {});
+      notify(`${r.marked} operacion(es) marcadas como subidas`, "bueno");
+      loadPendientes();
+    });
+  } catch (e) {
+    cont.innerHTML = `<div class="tenue">No se pudieron leer los pendientes: ${esc(e.message)}</div>`;
+  }
+}
 
 async function loadProfile() {
   try {
@@ -298,7 +328,8 @@ async function loadPortfolio(silencioso = false) {
           <thead><tr><th>Ticker</th><th class="num">Cant.</th><th class="num" data-glosario="Coste medio">Coste medio</th>
             <th class="num">Precio</th><th class="num" data-glosario="Variacion del dia">Dia</th><th>Mercado</th><th>Actualizado</th>
             <th class="num">Valor</th><th class="num" data-glosario="Plusvalia latente vs. realizada">P&L</th><th class="num">%</th>
-            <th class="num" data-glosario="Peso en cartera">Peso</th><th class="num" data-glosario="Nota">Nota</th></tr></thead>
+            <th class="num" data-glosario="Peso en cartera">Peso</th><th class="num" data-glosario="Nota">Nota</th>
+            <th>Broker</th></tr></thead>
           <tbody>${d.positions.map((p) => {
             const fr = freshness(p.age_seconds, p.price_as_of);
             const badge = marketStatusBadge(p.market_status);
@@ -319,6 +350,7 @@ async function loadPortfolio(silencioso = false) {
               <td class="num ${sign(p.gain_pct)}">${pct(p.gain_pct)}</td>
               <td class="num tenue">${p.weight_pct !== null ? `${number(p.weight_pct, 1)} %` : "—"}</td>
               <td class="num" data-nota="${esc(p.ticker)}">…</td>
+              <td class="tenue" style="font-size:12px">${esc(p.brokers || "—")}</td>
             </tr>`;}).join("")}
           </tbody></table></div>`
       : '<div class="vacio">Sin posiciones abiertas. <a href="#" data-help="cartera">Como registrar una compra</a></div>';
@@ -1074,7 +1106,7 @@ function changeView(name) {
   document.querySelectorAll(".vista").forEach((v) =>
     v.classList.toggle("activa", v.id === `vista-${name}`));
 
-  if (name === "cartera") { loadPortfolio(); loadProfile(); }
+  if (name === "cartera") { loadPortfolio(); loadProfile(); loadPendientes(); }
   if (name === "ayuda") loadHelp();
   if (name === "recomendaciones") loadRecommendations();
 }

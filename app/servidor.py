@@ -487,6 +487,21 @@ def export_all():
     }
 
 
+def config():
+    """App settings the UI needs at start, including what is still pending in the broker.
+    SeaLock never sends anything to a broker: this is the list of what YOU have to copy."""
+    try:
+        pending = fin.trades_pending()["by_broker"]
+    except Exception:  # noqa: BLE001 - a missing count must not break the app
+        pending = {}
+    return {
+        "currency": CURRENCY,
+        "database_path": fin.DB_PATH,
+        "brokers": list(fin.BROKERS),
+        "pending_by_broker": {k: v["count"] for k, v in pending.items()},
+    }
+
+
 API["app"] = {
     "portfolio_valued": portfolio_valued,
     "portfolio_scores": portfolio_scores,
@@ -495,7 +510,7 @@ API["app"] = {
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
     "export_all": export_all,
-    "config": lambda: {"currency": CURRENCY, "database_path": fin.DB_PATH},
+    "config": config,
 }
 
 

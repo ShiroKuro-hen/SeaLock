@@ -23,6 +23,11 @@ PROFILE_ENUMS = {
     "preference": ("dividend", "growth", "balanced"),
 }
 
+# Where a trade was executed. Fixed list on purpose: no broker accounts, no integrations,
+# this is just a label so the same trade isn't searched in the wrong place. Add values
+# here when you need them.
+BROKERS = ("HapiBroker", "ETF", "Fondo mutuo", "Otro")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +38,9 @@ CREATE TABLE IF NOT EXISTS trades (
     price REAL NOT NULL CHECK (price >= 0),
     commission REAL NOT NULL DEFAULT 0,
     currency TEXT NOT NULL,
-    note TEXT
+    note TEXT,
+    broker TEXT,
+    uploaded_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -115,7 +122,22 @@ def connect():
         _migrate_legacy_schema(cx)
     else:
         cx.executescript(SCHEMA)
+    _add_missing_columns(cx)
     return cx
+
+
+# Columns added to an existing trades table. CREATE TABLE IF NOT EXISTS does not add
+# columns to a table that already exists, so this runs on every connect() and is a no-op
+# once applied. No version table: two columns do not earn one.
+MIGRATIONS = (("trades", "broker", "broker TEXT"), ("trades", "uploaded_at", "uploaded_at TEXT"))
+
+
+def _add_missing_columns(cx):
+    for table, column, ddl in MIGRATIONS:
+        cols = {r["name"] for r in cx.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            cx.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    cx.commit()
 
 
 @contextmanager
@@ -135,6 +157,10 @@ def db():
 
 def rows(cursor):
     return [dict(r) for r in cursor.fetchall()]
+
+
+def _now():
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def validate_date(value, default_today=True):
@@ -225,13 +251,26 @@ def profile_set(risk_tolerance=None, horizon=None, preference=None):
         "commission": {"type": "number", "default": 0},
         "currency": {"type": "string"},
         "note": {"type": "string", "description": "Reason for the trade"},
+        "broker": {
+            "type": "string",
+            "enum": list(BROKERS),
+            "description": "Where you executed it; None when unknown",
+        },
+        "uploaded": {
+            "type": "boolean",
+            "default": False,
+            "description": "True when you already put it in the broker yourself",
+        },
     },
     required=["ticker", "action", "quantity", "price"],
 )
-def trade_create(ticker, action, quantity, price, date=None, commission=0, currency=None, note=None):
+def trade_create(ticker, action, quantity, price, date=None, commission=0, currency=None,
+                 note=None, broker=None, uploaded=False):
     if action not in ("buy", "sell"):
         raise ValueError("action must be 'buy' or 'sell'")
     ticker = ticker.upper().strip()
+    if broker is not None and broker not in BROKERS:
+        raise ValueError(f"broker must be one of {', '.join(BROKERS)}")
 
     with db() as cx:
         if action == "sell":
@@ -246,8 +285,9 @@ def trade_create(ticker, action, quantity, price, date=None, commission=0, curre
                 )
 
         cur = cx.execute(
-            """INSERT INTO trades (date,ticker,action,quantity,price,commission,currency,note)
-               VALUES (?,?,?,?,?,?,?,?)""",
+            """INSERT INTO trades (date,ticker,action,quantity,price,commission,currency,note,
+                                    broker,uploaded_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 validate_date(date),
                 ticker,
@@ -257,12 +297,16 @@ def trade_create(ticker, action, quantity, price, date=None, commission=0, curre
                 float(commission or 0),
                 (currency or BASE_CURRENCY).upper(),
                 note,
+                broker,
+                _now() if uploaded else None,
             ),
         )
     return {
         "ok": True,
         "id": cur.lastrowid,
         "ticker": ticker,
+        "broker": broker,
+        "uploaded": bool(uploaded),
         "total_amount": round(float(quantity) * float(price) + float(commission or 0), 2),
     }
 
@@ -289,9 +333,12 @@ def portfolio_view(include_closed=False):
                 "commissions": 0.0,
                 "currency": t["currency"],
                 "trades": 0,
+                "brokers": set(),
             },
         )
         p["trades"] += 1
+        if t.get("broker"):
+            p["brokers"].add(t["broker"])
         p["commissions"] += t["commission"]
         if t["action"] == "buy":
             p["total_cost"] += t["quantity"] * t["price"] + t["commission"]
@@ -317,6 +364,7 @@ def portfolio_view(include_closed=False):
                 "realized_gain": round(p["realized"], 2),
                 "commissions_paid": round(p["commissions"], 2),
                 "currency": p["currency"],
+                "brokers": ", ".join(sorted(p["brokers"])) or None,
                 "status": "open" if open_pos else "closed",
             }
         )
@@ -398,6 +446,64 @@ def watchlist_remove(ticker):
     with db() as cx:
         cur = cx.execute("DELETE FROM watchlist WHERE ticker = ?", (ticker.upper().strip(),))
     return {"ok": cur.rowcount > 0, "ticker": ticker.upper().strip()}
+
+
+# ------------------------------------------------------------------ broker sync
+
+
+@srv.tool(
+    "trades_pending",
+    "Trades you have not yet entered in the broker, grouped by broker. SeaLock never "
+    "sends anything anywhere: this is the list of what YOU still have to copy over.",
+    {"broker": {"type": "string", "enum": list(BROKERS)}},
+)
+def trades_pending(broker=None):
+    if broker is not None and broker not in BROKERS:
+        raise ValueError(f"broker must be one of {', '.join(BROKERS)}")
+    with db() as cx:
+        data = rows(cx.execute(
+            """SELECT * FROM trades WHERE uploaded_at IS NULL
+               AND (? IS NULL OR broker = ?)
+               ORDER BY date, id""",
+            (broker, broker),
+        ))
+    grouped = {}
+    for t in data:
+        grouped.setdefault(t["broker"] or "sin broker", []).append(
+            {"id": t["id"], "date": t["date"], "ticker": t["ticker"],
+             "action": t["action"], "quantity": t["quantity"], "price": t["price"]}
+        )
+    return {
+        "pending": data and len(data) or 0,
+        "by_broker": {k: {"count": len(v), "trades": v} for k, v in sorted(grouped.items())},
+    }
+
+
+@srv.tool(
+    "trades_mark_uploaded",
+    "Mark trades as already entered in the broker. No ids means every pending trade of "
+    "that broker. Records when, nothing else.",
+    {
+        "broker": {"type": "string", "enum": list(BROKERS)},
+        "ids": {"type": "array", "items": {"type": "integer"}},
+    },
+)
+def trades_mark_uploaded(broker=None, ids=None):
+    if broker is not None and broker not in BROKERS:
+        raise ValueError(f"broker must be one of {', '.join(BROKERS)}")
+    stamp = _now()
+    with db() as cx:
+        if ids:
+            marks = ",".join("?" * len(ids))
+            cur = cx.execute(
+                f"UPDATE trades SET uploaded_at=? WHERE id IN ({marks})", [stamp, *ids])
+        else:
+            cur = cx.execute(
+                """UPDATE trades SET uploaded_at=?
+                   WHERE uploaded_at IS NULL AND (? IS NULL OR broker=?)""",
+                (stamp, broker, broker),
+            )
+    return {"ok": True, "marked": cur.rowcount, "uploaded_at": stamp}
 
 
 # --------------------------------------------------------------------- reviews

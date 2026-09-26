@@ -223,6 +223,45 @@ try:
           gone.get("ok") is True and gone["deleted"]["id"] == rid, str(gone)[:200])
     empty = json.loads(text(c.request("tools/call", {"name": "review_get", "arguments": {"ticker": "ZZZZ"}})))
     check("review_get sin revisiones devuelve null", empty["review"] is None, str(empty))
+
+    # --- broker: donde se ejecuto y que falta por subir a la plataforma ---
+    bad_broker = c.request("tools/call", {"name": "trade_create", "arguments": {
+        "ticker": "AAPL", "action": "buy", "quantity": 1, "price": 10, "broker": "Citi"}})
+    check("trade_create rechaza un broker fuera de la lista",
+          bad_broker["result"].get("isError") is True, text(bad_broker)[:150])
+
+    hapi = json.loads(text(c.request("tools/call", {"name": "trade_create", "arguments": {
+        "ticker": "VOO", "action": "buy", "quantity": 2, "price": 500, "currency": "USD",
+        "broker": "HapiBroker"}})))
+    check("trade_create guarda el broker", hapi.get("broker") == "HapiBroker", str(hapi)[:150])
+
+    ya_subida = json.loads(text(c.request("tools/call", {"name": "trade_create", "arguments": {
+        "ticker": "AAPL", "action": "buy", "quantity": 1, "price": 10,
+        "broker": "ETF", "uploaded": True}})))
+    check("trade_create acepta 'ya esta en el broker'", ya_subida.get("uploaded") is True,
+          str(ya_subida)[:150])
+
+    pending = json.loads(text(c.request("tools/call", {"name": "trades_pending", "arguments": {}})))
+    check("trades_pending agrupa lo que falta por broker",
+          pending["pending"] >= 1 and "HapiBroker" in pending["by_broker"]
+          and any(t["ticker"] == "VOO" for t in pending["by_broker"]["HapiBroker"]["trades"]),
+          str(pending)[:250])
+    check("una operacion ya subida no sale como pendiente",
+          not any(t["id"] == ya_subida["id"]
+                  for g in pending["by_broker"].values() for t in g["trades"]))
+
+    marked = json.loads(text(c.request("tools/call", {
+        "name": "trades_mark_uploaded", "arguments": {"broker": "HapiBroker"}})))
+    check("trades_mark_uploaded marca las de ese broker",
+          marked["marked"] >= 1 and bool(marked["uploaded_at"]), str(marked)[:150])
+    after = json.loads(text(c.request("tools/call", {
+        "name": "trades_pending", "arguments": {"broker": "HapiBroker"}})))
+    check("tras marcar, HapiBroker queda limpio", after["pending"] == 0, str(after)[:150])
+
+    port = json.loads(text(c.request("tools/call", {"name": "portfolio_view", "arguments": {}})))
+    voo = next((p for p in port["positions"] if p["ticker"] == "VOO"), None)
+    check("portfolio_view dice en que broker esta la posicion",
+          voo and voo.get("brokers") == "HapiBroker", str(voo))
 finally:
     c.close()
 
@@ -488,6 +527,7 @@ check("review_status: vigente sin caducidad y sin trimestre nuevo",
 check("review_status: la caducidad gana a la obsolescencia",
       finsrv.review_status({"expires_at": "2020-01-01", "last_quarter_seen": "2020-04-30"},
                            latest_quarter_end="2026-09-30") == "expired")
+
 
 HEALTHY = {
     "fundamentals": {
