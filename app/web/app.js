@@ -583,9 +583,9 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
           <a class="btn-ayuda" href="#" data-section="preguntar" title="Mas informacion">?</a>
         </div>
         <div class="tenue" style="font-size:12px;margin-bottom:10px">
-          Le pasa los numeros de esta ficha (precio, nota, pilares, trimestres) y puede
-          buscar en internet. <b>Es la unica parte de SeaLock que sale de tu equipo</b>:
-          solo al pulsar el boton.
+          Le pasa los numeros de esta ficha (precio, nota, pilares, trimestres,
+          <b>proyecciones</b> y noticias) y puede buscar en internet. <b>Es la unica parte de
+          SeaLock que sale de tu equipo</b>: solo al pulsar el boton.
         </div>
         <form id="form-ask" class="form-linea" style="flex-wrap:wrap">
           <input name="question" placeholder="¿Esta cara ya? ¿Que mire en el proximo trimestre?"
@@ -594,6 +594,10 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
           <label class="check"><input name="web_search" type="checkbox" checked>Buscar en internet</label>
           <button type="submit" class="principal">Preguntar</button>
         </form>
+        <div class="acciones-caja" style="margin-top:12px">
+          <button id="btn-copiar-prompt" title="Copiar al portapapeles los datos, las URLs, tu perfil y tu cartera, para pegarlos en cualquier IA">
+            Copiar prompt para otra IA</button>
+        </div>
         <div id="respuesta-ask"></div>
       </div>
 
@@ -621,6 +625,23 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
     cont.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
 
     const formAsk = document.getElementById("form-ask");
+    document.getElementById("btn-copiar-prompt").addEventListener("click", async (ev) => {
+      const boton = ev.currentTarget;
+      boton.disabled = true;
+      boton.textContent = "Preparando…";
+      try {
+        const r = await api("app", "build_prompt", { ticker });
+        // API nativa del navegador; sin librerias.
+        await navigator.clipboard.writeText(r.text);
+        notify("Prompt copiado. Pégalo donde quieras: incluye tu perfil y tu cartera.", "bueno");
+      } catch (e) {
+        notify(`No se pudo copiar: ${e.message}`, "malo");
+      } finally {
+        boton.disabled = false;
+        boton.textContent = "Copiar prompt para otra IA";
+      }
+    });
+
     formAsk.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const d = formData(ev.target);
@@ -1317,7 +1338,11 @@ const HELP_CARD = {
           publicas. La decision es tuya.</li>
       </ul>
       <p>Si no hay clave, la caja te lo dice y no envia nada. Puedes cambiar de modelo con
-        <code>SEALOCK_CLAUDE_MODEL</code>.</p>`,
+        <code>SEALOCK_CLAUDE_MODEL</code>.</p>
+      <p><b>Copiar prompt para otra IA</b> es la via libre: arma lo mismo (datos, URLs,
+        tu perfil y tu cartera) en un texto que copias al portapapeles y pegas donde quieras.
+        Ahi <b>si viaja tu cartera entera</b>, porque la pegas tu a mano y eliges el sitio.
+        El prompt pide analisis y riesgos, nunca comprar o vender.</p>`,
   },
   recomendaciones: {
     titulo: "Recomendaciones",

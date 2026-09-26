@@ -493,6 +493,23 @@ def export_all():
     }
 
 
+def build_prompt(ticker):
+    """Text to copy into any AI: the ticker's numbers with URLs, the investor profile and
+    the whole portfolio. Stays on this machine until the user pastes it somewhere."""
+    detail = stock_detail(ticker)
+    valued = portfolio_valued()
+    positions = valued.get("positions") or []
+    # The valued position is the complete one (weight, cost currency); stock_detail's
+    # snapshot is a subset and would print "—" for the weight.
+    full = next((p for p in positions if p["ticker"] == detail["ticker"]), detail.get("position"))
+    if full:
+        detail = {**detail, "position": full}
+    return {
+        "ticker": detail["ticker"],
+        "text": llm.build_prompt(detail, fin.profile_get(), positions),
+    }
+
+
 def ask(ticker, question, include_position=False, web_search=True):
     """One question to Claude, with this ticker's numbers as context. Network only here,
     and only when the user presses the button: see app/llm.py for the privacy boundary."""
@@ -527,6 +544,7 @@ API["app"] = {
     "recommendation_positions": recommendation_positions,
     "export_all": export_all,
     "ask": ask,
+    "build_prompt": build_prompt,
     "config": config,
 }
 

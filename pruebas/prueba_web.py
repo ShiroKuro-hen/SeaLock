@@ -318,6 +318,16 @@ try:
     code, _ = request("/api/app/ask", {"ticker": "AAPL", "question": "hola"})
     check("ask rechaza llamada sin token", code == 403, f"codigo={code}")
 
+    code, r = call("/api/app/build_prompt", {"ticker": "AAPL"})
+    pr = r["data"].get("text", "")
+    check("build_prompt devuelve un prompt con los datos y las URLs (red)",
+          code == 200 and "finance.yahoo.com/quote/AAPL" in pr and "Mi perfil inversor" in pr,
+          str(r)[:200], critical=False)
+    check("el prompt lleva los numeros de la ficha y las proyecciones",
+          "Nota de la app" in pr and "Proyecciones del consenso" in pr, "", critical=False)
+    code, _ = request("/api/app/build_prompt", {"ticker": "AAPL"})
+    check("build_prompt rechaza llamada sin token", code == 403, f"codigo={code}")
+
     code, html = request("/")
     check("la clave de la API nunca llega al HTML",
           "ANTHROPIC_API_KEY" not in html and "x-api-key" not in html, "")

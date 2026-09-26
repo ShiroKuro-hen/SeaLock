@@ -3,7 +3,7 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-25: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32 y HU-33. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
+HU-04, HU-06, HU-07, HU-08, HU-09, HU-28, HU-31, HU-32, HU-33 y HU-34. Epicas 1 y 3 cerradas; la 2 (HU-05) y la 4
 (Hidden Gems) siguen enteras.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
@@ -659,6 +659,24 @@ Nota: el sesgo al alza del sell-side ya estaba documentado para el precio objeti
 se aplica el mismo criterio al resto del consenso. Con menos de 3 analistas la cobertura
 es tan baja que la cifra se lee como orientativa: se muestra, pero el balance de
 revisiones de un solo analista no dice mucho.
+
+### [x] HU-34 — Copiar prompt del valor con perfil, cartera y URLs (S)
+**Como** inversor, **quiero** copiarme los datos del valor, las URLs, mi perfil y mi cartera
+en un texto, **para** pegarlo en cualquier IA y que me lo analice con mi contexto.
+- [x] `llm.build_prompt()` (puro) arma el prompt: instruccion de "analiza, no me digas que
+      compre", perfil inversor, posicion de este valor, el resto de la cartera, todos los
+      numeros (`build_context`) y las URLs (cotizacion + titulares).
+- [x] Endpoint `app/build_prompt` y boton "Copiar prompt para otra IA" en la ficha, que
+      usa `navigator.clipboard` (nativo, sin librerias).
+- [x] **La cartera si viaja entera en el prompt**, a diferencia de la caja de preguntar:
+      aqui la pegas tu a mano y eliges el sitio, que es justo lo que se pidio. La caja de
+      preguntar mantiene la posicion como opt-in.
+- [x] El prompt lleva las **proyecciones** (consenso + balance de revisiones) y avisa de
+      que son prevision.
+- [x] Tests: 6 puros del prompt y 3 del contexto con proyecciones, + 3 e2e.
+
+Nota: las proyecciones tambien entran en la caja de preguntar a Claude (faltaban en
+HU-32, corregido aqui).
 
 ### [ ] HU-30 — Comparador de acciones (M)
 **Como** inversor, **quiero** comparar varias acciones lado a lado, **para** elegir entre ellas.
