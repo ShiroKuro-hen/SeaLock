@@ -64,7 +64,7 @@ proc = subprocess.Popen(
     [sys.executable, "-u", os.path.join(ROOT, "app", "servidor.py")],
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", cwd=ROOT,
     env={**os.environ, "SEALOCK_DATA": TEST_DIR, "SEALOCK_PORT": str(PORT),
-         "SEALOCK_NO_OPEN": "1", "PYTHONIOENCODING": "utf-8"},
+         "SEALOCK_NO_OPEN": "1", "SEALOCK_REFRESH_COOLDOWN": "0", "PYTHONIOENCODING": "utf-8"},
 )
 
 try:
@@ -160,6 +160,40 @@ try:
     if code == 200 and "score" in f:
         check("la nota trae position para un valor en cartera", f.get("position") is not None,
               str(f.get("position")), critical=False)
+    q = f.get("quarterly") or {}
+    check("la ficha trae los trimestres fiscales (red)",
+          bool(q.get("quarters")) and "available" in q, str(q)[:200], critical=False)
+    if q.get("quarters"):
+        primero = q["quarters"][0]
+        check("cada trimestre trae cierre, ventas, beneficio, BPA, margen e interanual",
+              all(k in primero for k in ("period_end", "revenue", "net_income", "diluted_eps",
+                                          "net_margin_pct", "revenue_yoy_pct")),
+              str(primero)[:200])
+        check("el pilar de resultados recientes usa esos trimestres",
+              next(p for p in f["score"]["pillars"]
+                   if p["key"] == "results")["subscore"] is not None,
+              str([(p["key"], p["subscore"]) for p in f["score"]["pillars"]]))
+    check("la nota expone quarters_available y su aviso",
+          "quarters_available" in f["score"], str(f["score"].get("quarters_available")))
+
+    # --- actualizar nota a demanda (HU-06) ---
+    check("la ficha dice cuantos datos tiene la nota",
+          isinstance(f.get("score_age_seconds"), int) and f["score_age_seconds"] >= 0,
+          str(f.get("score_age_seconds")))
+    code, r = call("/api/app/stock_detail", {"ticker": "AAPL"})
+    f2 = r["data"]
+    check("la segunda llamada sirve la cache: la edad no se reinicia",
+          f2["score_age_seconds"] >= f["score_age_seconds"],
+          f"{f['score_age_seconds']} -> {f2['score_age_seconds']}")
+    code, r = call("/api/app/stock_detail", {"ticker": "AAPL", "refresh": True})
+    f3 = r["data"]
+    check("refresh=true reinicia la edad de los datos",
+          code == 200 and f3["score_age_seconds"] <= f2["score_age_seconds"],
+          f"{f2['score_age_seconds']} -> {f3['score_age_seconds']}")
+    with open(os.path.join(ROOT, "app", "web", "app.js"), encoding="utf-8") as fh:
+        ficha_js = fh.read()
+    check("el boton Actualizar nota esta en la ficha",
+          "btn-actualizar-nota" in ficha_js, "")
 
     code, r = call("/api/app/portfolio_scores", {})
     check("portfolio_scores via API (red)",
@@ -193,6 +227,49 @@ try:
 
     code, _ = request("/api/app/recommendation_universe", {})
     check("recommendation_universe rechaza llamada sin token", code == 403, f"codigo={code}")
+
+    # --- revision de Claude en la ficha (HU-08/HU-09) ---
+    code, r = call("/api/finance/review_set", {
+        "ticker": "AAPL", "adjustment": 1, "rationale": "Prueba e2e: trimestre mejor de lo esperado",
+        "sources": ["https://example.com/nota"], "mechanical_score": 6.5,
+        "last_quarter_seen": "2026-06-30"})
+    check("review_set via API guarda la revision", code == 200 and r["data"]["ok"], str(r)[:200])
+
+    code, r = call("/api/app/stock_detail", {"ticker": "AAPL"})
+    sc = r["data"].get("score") or {}
+    check("stock_detail trae score, final_score y review",
+          code == 200 and "final_score" in sc and (sc.get("review") or {}).get("adjustment") == 1,
+          str(sc)[:200])
+    check("el ajuste mueve la nota final y la mecanica queda a la vista",
+          sc.get("final_score") != sc.get("score") or sc.get("review_applied"),
+          f"mecanica={sc.get('score')} final={sc.get('final_score')}")
+    check("con revision vigente el veredicto queda aplicado",
+          sc.get("review_applied") is True, str(sc.get("review_applied")))
+
+    code, r = call("/api/app/stock_detail", {"ticker": "AAPL",
+                                              "latest_quarter_end": "2026-09-30"})
+    sc_stale = r["data"].get("score") or {}
+    check("una revision obsoleta no se aplica pero se informa",
+          sc_stale.get("review_applied") is False
+          and (sc_stale.get("review") or {}).get("status") == "stale", str(sc_stale)[:200])
+
+    code, r = call("/api/finance/review_get", {"ticker": "AAPL"})
+    rid = r["data"]["review"]["id"]
+    code, r = call("/api/finance/review_delete", {"id": rid})
+    check("review_delete sin confirmacion no borra", r["data"].get("needs_confirmation") is True, str(r)[:200])
+    call("/api/finance/review_delete", {"id": rid, "confirm": True})
+    code, r = call("/api/finance/review_get", {"ticker": "AAPL"})
+    check("tras confirmar, la revision ya no esta", r["data"].get("review") is None, str(r)[:200])
+
+    # --- exportacion (HU-28) ---
+    code, r = call("/api/app/export_all", {})
+    exp = r["data"] if code == 200 else {}
+    check("export_all devuelve trades, watchlist y reviews",
+          code == 200 and set(exp) == {"trades", "watchlist", "reviews"}, str(r)[:200])
+    check("export_all incluye las operaciones registradas",
+          any(t["ticker"] == "AAPL" for t in exp.get("trades", [])), str(exp.get("trades"))[:200])
+    code, _ = request("/api/app/export_all", {})
+    check("export_all rechaza llamada sin token", code == 403, f"codigo={code}")
 
     # B4: todo label con data-glosario en app.js tiene entrada en glosario.js
     with open(os.path.join(ROOT, "app", "web", "app.js"), encoding="utf-8") as f:
