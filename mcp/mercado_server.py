@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 import scoring
 import symbols
 from mcp_common import MCPServer, log
+import indicators
+import metrics
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -119,6 +121,10 @@ def _pct(a, b):
     if a is None or b in (None, 0):
         return None
     return round(100 * (a - b) / b, 2)
+
+
+def _round3(value):
+    return round(value, 3) if value is not None else None
 
 
 def _fill_derived(f):
@@ -530,19 +536,33 @@ def historical(ticker, date_range="1y", interval="1d", include_series=False):
         raise ValueError(f"No historical data for '{ticker}'")
     res = result[0]
     timestamps = res.get("timestamp") or []
-    raw_closes = res["indicators"]["quote"][0].get("close") or []
+    quote = res["indicators"]["quote"][0]
+    raw_closes = quote.get("close") or []
+    # ATR needs the true range, so the same row must carry high and low too.
+    raw_highs = quote.get("high") or []
+    raw_lows = quote.get("low") or []
 
-    series = [
-        (datetime.fromtimestamp(t, timezone.utc).date().isoformat(), c)
-        for t, c in zip(timestamps, raw_closes)
-        if c is not None
-    ]
+    series, candles = [], []
+    for i, (t, c) in enumerate(zip(timestamps, raw_closes)):
+        if c is None:
+            continue
+        series.append(
+            (datetime.fromtimestamp(t, timezone.utc).date().isoformat(), c)
+        )
+        h = raw_highs[i] if i < len(raw_highs) else None
+        lo = raw_lows[i] if i < len(raw_lows) else None
+        if h is not None and lo is not None:
+            candles.append(indicators.OHLCV(h, lo, c))
     if len(series) < 3:
         raise ValueError("Insufficient historical data to calculate metrics")
 
     closes = [c for _, c in series]
     returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
-    periods_per_year = {"1d": 252, "1wk": 52, "1mo": 12}.get(interval, 252)
+    # Annualize from the data, not from the interval we asked for: Yahoo downsamples
+    # long ranges, so "1d" can come back monthly or quarterly (see metrics.py).
+    periods_per_year = metrics.periods_per_year_from_dates(
+        [d for d, _ in series]
+    ) or metrics.PERIODS_PER_YEAR.get(interval, 252)
     volatility = (
         statistics.pstdev(returns) * math.sqrt(periods_per_year) * 100 if len(returns) > 1 else None
     )
@@ -552,17 +572,19 @@ def historical(ticker, date_range="1y", interval="1d", include_series=False):
         peak = max(peak, c)
         max_dd = min(max_dd, c / peak - 1)
 
-    def sma(n):
-        return round(sum(closes[-n:]) / n, 4) if len(closes) >= n else None
+    # HU-23: the maths comes from `mcp/indicators.py` (vendored from talipp,
+    # see `mcp/FUENTE.md`). SMA keeps the exact value the hand-written mean had;
+    # RSI now follows Wilder's smoothing instead of the plain average of the
+    # last 14 returns — the difference is documented and pinned in the tests.
+    sma50 = indicators.SMA(50, closes).last()
+    sma200 = indicators.SMA(200, closes).last()
+    rsi = indicators.RSI(14, closes).last()
+    atr = indicators.ATR(14, candles).last()
+    bb = indicators.BB(20, 2.0, closes).last()
+    macd = indicators.MACD(12, 26, 9, closes).last()
 
-    rsi = None
-    if len(returns) >= 14:
-        window = returns[-14:]
-        gains = [r for r in window if r > 0]
-        losses = [-r for r in window if r < 0]
-        avg_g = sum(gains) / 14
-        avg_p = sum(losses) / 14
-        rsi = 100.0 if avg_p == 0 else round(100 - 100 / (1 + avg_g / avg_p), 1)
+    def r4(v):
+        return round(v, 4) if v is not None else None
 
     output = {
         "ticker": ticker.upper(),
@@ -576,13 +598,28 @@ def historical(ticker, date_range="1y", interval="1d", include_series=False):
         "period_return_pct": round(100 * (closes[-1] / closes[0] - 1), 2),
         "annualized_volatility_pct": round(volatility, 2) if volatility else None,
         "max_drawdown_pct": round(100 * max_dd, 2),
-        "sma_50": sma(50),
-        "sma_200": sma(200),
-        "rsi_14": rsi,
+        # Risk-adjusted metrics (HU-24). The risk-free rate is a knob
+        # (SEALOCK_RISK_FREE_RATE), echoed in every portfolio summary, never hidden.
+        "sharpe": _round3(metrics.sharpe(returns, periods_per_year)),
+        "sortino": _round3(metrics.sortino(returns, periods_per_year)),
+        "calmar": _round3(metrics.calmar(returns, periods_per_year)),
+        "risk_free_rate": metrics.RISK_FREE_RATE,
+        # HU-23: trend/volatility indicators (talipp semantics, FUENTE.md).
+        "sma_50": r4(sma50),
+        "sma_200": r4(sma200),
+        "rsi_14": round(rsi, 1) if rsi is not None else None,
+        "atr_14": r4(atr),
+        "bollinger_upper": r4(bb.ub) if bb else None,
+        "bollinger_lower": r4(bb.lb) if bb else None,
+        "macd": r4(macd.macd) if macd else None,
+        "macd_signal": r4(macd.signal) if macd and macd.signal is not None else None,
         "period_high": round(max(closes), 4),
         "period_low": round(min(closes), 4),
     }
     if include_series:
+        # `closes` is the whole requested window (the sparkline and the portfolio
+        # history need a year, not a month); `recent_closes` stays the last 60.
+        output["closes"] = [{"date": f, "close": round(c, 4)} for f, c in series]
         output["recent_closes"] = [
             {"date": f, "close": round(c, 4)} for f, c in series[-60:]
         ]

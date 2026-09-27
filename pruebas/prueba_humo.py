@@ -22,11 +22,15 @@ TEST_DIR = tempfile.mkdtemp(prefix="sealock-test-")
 class Client:
     def __init__(self, script):
         env = {**os.environ, "SEALOCK_DATA": TEST_DIR, "PYTHONIOENCODING": "utf-8"}
+        # stderr goes to a file, never to an unread PIPE: the servers log a traceback
+        # per rejected input and Windows caps a pipe at 4 KB, so the server would block
+        # on the write and stop answering tools/call. The suite would hang forever.
+        self.err = open(os.path.join(TEST_DIR, script + ".stderr"), "w+", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-u", os.path.join(ROOT, "mcp", script)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=self.err,
             text=True,
             encoding="utf-8",
             cwd=ROOT,
@@ -43,7 +47,8 @@ class Client:
         self.proc.stdin.flush()
         line = self.proc.stdout.readline()
         if not line:
-            raise RuntimeError(f"Server died. stderr:\n{self.proc.stderr.read()}")
+            self.err.seek(0)
+            raise RuntimeError(f"Server died. stderr:\n{self.err.read()}")
         return json.loads(line)
 
     def close(self):
@@ -159,6 +164,30 @@ try:
         str(mixed["cost_by_currency"]),
     )
 
+    # --- HU-26: convencion de punto en el tiempo ---
+    # La venta se enfrenta al coste medio construido SOLO con las compras anteriores
+    # por fecha. Una compra posterior no debe mover esa plusvalia: si la mueve, hay
+    # look-ahead. Aqui: 2@100, venta de 1@300 y luego 2@400 -> realized = 300-100 = 200,
+    # no 300-300 = 0 (que es lo que saldria mezclando la compra posterior).
+    for _args in (
+        {"ticker": "TSM", "action": "buy", "quantity": 2, "price": 100, "date": "2026-01-05"},
+        {"ticker": "TSM", "action": "sell", "quantity": 1, "price": 300, "date": "2026-02-05"},
+        {"ticker": "TSM", "action": "buy", "quantity": 2, "price": 400, "date": "2026-03-05"},
+    ):
+        c.request("tools/call", {"name": "trade_create", "arguments": _args})
+    tsm = json.loads(text(c.request("tools/call", {"name": "portfolio_view", "arguments": {}})))
+    tsm_pos = next(p for p in tsm["positions"] if p["ticker"] == "TSM")
+    check(
+        "HU-26: la plusvalia usa el coste medio anterior a la venta, sin look-ahead",
+        abs(tsm_pos["realized_gain"] - 200) < 0.01,
+        f"realized={tsm_pos['realized_gain']} (esperado 200)",
+    )
+    check(
+        "HU-26: average_cost refleja solo lo comprado hasta cada momento",
+        abs(tsm_pos["average_cost"] - 300) < 0.01,
+        f"avg={tsm_pos['average_cost']} (esperado 300 = (100+800)/3)",
+    )
+
     bad_sql = c.request(
         "tools/call", {"name": "sql_query", "arguments": {"sql": "DELETE FROM trades"}}
     )
@@ -176,6 +205,67 @@ try:
 
     removed = json.loads(text(c.request("tools/call", {"name": "watchlist_remove", "arguments": {"ticker": "NVDA"}})))
     check("watchlist_remove confirma el borrado", removed.get("ok") is True, str(removed))
+
+    # --- alertas (HU-25) ---
+    def alert_args(**args):
+        return c.request("tools/call", {"name": args.pop("tool"), "arguments": args})
+
+    alerta = json.loads(text(c.request("tools/call", {"name": "alert_create", "arguments": {
+        "ticker": "itx.mc", "metric": "rsi_14", "operator": "below", "threshold": 30}})))
+    check("alert_create guarda y normaliza el ticker",
+          alerta.get("ok") is True and alerta["alert"]["ticker"] == "ITX.MC", str(alerta)[:200])
+    check("la alerta lleva su frase, que describe un hecho",
+          alerta["alert"]["text"] == "RSI de ITX.MC bajo 30"
+          and not any(w in alerta["alert"]["text"] for w in ("compra", "venta", "conviene")),
+          str(alerta["alert"]["text"]))
+    check("una alerta nueva nace activa, armada y sin disparos",
+          alerta["alert"]["active"] and alerta["alert"]["armed"]
+          and alerta["alert"]["last_triggered_at"] is None, str(alerta["alert"]))
+
+    lista = json.loads(text(c.request("tools/call", {"name": "alerts_list", "arguments": {}})))
+    aid = alerta["alert"]["id"]
+    check("alerts_list la incluye", any(a["id"] == aid for a in lista["alerts"]), str(lista)[:200])
+
+    for malo, args in (
+        ("metrica desconocida", {"tool": "alert_create", "ticker": "AAPL", "metric": "pe",
+                                 "operator": "above", "threshold": 10}),
+        ("operador desconocido", {"tool": "alert_create", "ticker": "AAPL", "metric": "price",
+                                  "operator": "crosses", "threshold": 10}),
+        ("RSI fuera de 0-100", {"tool": "alert_create", "ticker": "AAPL", "metric": "rsi_14",
+                                "operator": "above", "threshold": 150}),
+        ("umbral no positivo en precio", {"tool": "alert_create", "ticker": "AAPL",
+                                          "metric": "price", "operator": "below", "threshold": 0}),
+        ("umbral que no es numero", {"tool": "alert_create", "ticker": "AAPL", "metric": "price",
+                                     "operator": "above", "threshold": "casi"}),
+    ):
+        check(f"alert_create rechaza {malo}",
+              alert_args(**args)["result"].get("isError") is True)
+
+    pausada = json.loads(text(c.request("tools/call", {
+        "name": "alert_toggle", "arguments": {"id": aid}})))
+    check("alert_toggle pausa la alerta",
+          pausada.get("ok") is True and pausada["alert"]["active"] is False, str(pausada)[:200])
+    reanudada = json.loads(text(c.request("tools/call", {
+        "name": "alert_toggle", "arguments": {"id": aid, "active": True}})))
+    check("alert_toggle al reanudar deja la alerta armada para volver a avisar",
+          reanudada["alert"]["active"] is True and reanudada["alert"]["armed"] is True,
+          str(reanudada["alert"]))
+    check("alert_toggle sin id existente lo dice en vez de fallar en silencio",
+          json.loads(text(c.request("tools/call", {
+              "name": "alert_toggle", "arguments": {"id": 999999}}))).get("ok") is False)
+
+    previa = json.loads(text(c.request("tools/call", {
+        "name": "alert_delete", "arguments": {"id": aid}})))
+    check("alert_delete sin confirmacion muestra el registro y no borra",
+          previa.get("needs_confirmation") is True and previa["alert"]["id"] == aid,
+          str(previa)[:200])
+    borrada = json.loads(text(c.request("tools/call", {
+        "name": "alert_delete", "arguments": {"id": aid, "confirm": True}})))
+    check("alert_delete con confirmacion borra",
+          borrada.get("ok") is True and borrada["deleted"]["id"] == aid, str(borrada)[:200])
+    final = json.loads(text(c.request("tools/call", {"name": "alerts_list", "arguments": {}})))
+    check("la alerta borrada ya no aparece",
+          not any(a["id"] == aid for a in final["alerts"]), str(final)[:200])
 
     # --- revisiones de la nota (score_reviews) ---
     def review_set(**args):
@@ -440,6 +530,32 @@ try:
         str(est.get("target"))[:150],
         critical=False,
     )
+
+    # --- HU-26: period_return_pct es trailing, no una rentabilidad de backtest ---
+    # Solo puede salir de los cierres de la ventana pedida, cerrada en date_to. Si la
+    # formula cambia (o alguien la usa como retorno ya obtenido), esto falla.
+    hist = json.loads(text(c.request("tools/call", {
+        "name": "historical", "arguments": {"ticker": "AAPL", "date_range": "6mo"}})))
+    esperado = round(100 * (hist["end_price"] / hist["start_price"] - 1), 2)
+    check(
+        "HU-26: period_return_pct es trailing (closes[-1]/closes[0]-1 dentro de la ventana)",
+        abs(hist["period_return_pct"] - esperado) < 0.05,
+        f"period_return_pct={hist['period_return_pct']} vs {esperado} "
+        f"({hist['date_from']}..{hist['date_to']})",
+        critical=False,
+    )
+    check(
+        "HU-26: la ventana cierra en date_to, sin datos posteriores",
+        hist["date_to"] >= hist["date_from"] and hist["observations"] >= 3,
+        f"{hist['date_from']}..{hist['date_to']} obs={hist['observations']}",
+        critical=False,
+    )
+    check(
+        "HU-24: historical trae sharpe/sortino/calmar y la tasa libre de riesgo usada",
+        all(k in hist for k in ("sharpe", "sortino", "calmar", "risk_free_rate")),
+        str({k: hist.get(k) for k in ("sharpe", "sortino", "calmar", "risk_free_rate")}),
+        critical=False,
+    )
 finally:
     c.close()
 
@@ -522,6 +638,157 @@ check("quarterly_derive: no calcula crecimiento sobre base negativa (BPA y benef
       str(lo["quarters"][0]))
 check("quarterly_derive: con base positiva el crecimiento si se calcula, aunque el valor sea negativo",
       lo["quarters"][0]["revenue_yoy_pct"] == 0.0, str(lo["quarters"][0]["revenue_yoy_pct"]))
+
+# ------------------------------------------------------- indicadores (HU-23)
+# `mcp/indicators.py` esta vendorizado de talipp (MIT, ver mcp/FUENTE.md). Los
+# valores golden de aqui salieron de talipp 2.7.0 real sobre esta misma serie;
+# pruebas/compara_talipp.py (opcional) los vuelve a comprobar contra la libreria.
+print("\n== indicadores tecnicos: indicators.py (HU-23) ==")
+import indicators as ind  # noqa: E402
+import scoring  # noqa: E402
+
+
+def serie_h23(n=260):
+    # Enteros, sin `math`: la serie sale identica en cualquier plataforma.
+    return [round(100 + ((i * 13) % 29) - 14 + (i % 5) * 0.8 + i * 0.12, 2)
+            for i in range(n)]
+
+
+def cerca(a, b, tol=1e-6):
+    return a is not None and abs(a - b) <= tol
+
+
+CIERRES = serie_h23()
+VELAS, prev = [], CIERRES[0]
+for c in CIERRES:
+    VELAS.append(ind.OHLCV(round(max(prev, c) * 1.012, 4),
+                           round(min(prev, c) * 0.988, 4), c))
+    prev = c
+
+check("HU-23: SMA 50 vale lo que vale talipp (golden)",
+      cerca(ind.SMA(50, CIERRES).last(), 129.68000000000015),
+      str(ind.SMA(50, CIERRES).last()))
+check("HU-23: SMA 200 vale lo que vale talipp (golden)",
+      cerca(ind.SMA(200, CIERRES).last(), 120.80499999999981),
+      str(ind.SMA(200, CIERRES).last()))
+check("HU-23: la SMA sigue valiendo lo mismo que la media simple de historical()",
+      round(ind.SMA(50, CIERRES).last(), 4) == round(sum(CIERRES[-50:]) / 50, 4)
+      and round(ind.SMA(200, CIERRES).last(), 4) == round(sum(CIERRES[-200:]) / 200, 4),
+      f"{round(ind.SMA(50, CIERRES).last(), 4)} / {round(ind.SMA(200, CIERRES).last(), 4)}")
+check("HU-23: EMA 12 vale lo que vale talipp (golden)",
+      cerca(ind.EMA(12, CIERRES).last(), 131.70257085623194),
+      str(ind.EMA(12, CIERRES).last()))
+check("HU-23: RSI 14 (suavizado de Wilder) = golden de talipp",
+      cerca(ind.RSI(14, CIERRES).last(), 47.93057472008976),
+      str(ind.RSI(14, CIERRES).last()))
+check("HU-23: ATR 14 = golden de talipp",
+      cerca(ind.ATR(14, VELAS).last(), 17.87164080567721),
+      str(ind.ATR(14, VELAS).last()))
+check("HU-23: Bollinger 20x2 = golden de talipp (banda baja y alta)",
+      cerca(ind.BB(20, 2.0, CIERRES).last().lb, 114.70345875401186)
+      and cerca(ind.BB(20, 2.0, CIERRES).last().ub, 149.07654124598514),
+      str(ind.BB(20, 2.0, CIERRES).last()))
+check("HU-23: MACD 12/26/9 = golden de talipp (linea y senal)",
+      cerca(ind.MACD(12, 26, 9, CIERRES).last().macd, 0.4497368730432356)
+      and cerca(ind.MACD(12, 26, 9, CIERRES).last().signal, 1.1094284224569706),
+      str(ind.MACD(12, 26, 9, CIERRES).last()))
+check("HU-23: sin datos suficientes devuelven None, nunca un numero inventado",
+      ind.SMA(200, CIERRES[:100]).last() is None
+      and ind.RSI(14, CIERRES[:14]).last() is None
+      and ind.ATR(14, VELAS[:10]).last() is None
+      and ind.BB(20, 2.0, CIERRES[:10]).last() is None,
+      "sma200 con 100 cierres / rsi14 con 14 / atr14 con 10 velas / bb con 10")
+
+# El cambio de RSI es deliberado y documentado (mcp/FUENTE.md): la formula
+# anterior promediaba los ultimos 14 retornos y da 49.0, talipp da 47.9.
+rets_h23 = [CIERRES[i] / CIERRES[i - 1] - 1 for i in range(1, len(CIERRES))]
+_g = sum(r for r in rets_h23[-14:] if r > 0) / 14
+_l = sum(-r for r in rets_h23[-14:] if r < 0) / 14
+rsi_antigua = 100.0 if _l == 0 else round(100 - 100 / (1 + _g / _l), 1)
+check("HU-23: el RSI nuevo difiere del antiguo a proposito (Wilder vs media simple)",
+      rsi_antigua == 49.0 and round(ind.RSI(14, CIERRES).last(), 1) == 47.9,
+      f"antigua={rsi_antigua} nueva={round(ind.RSI(14, CIERRES).last(), 1)}")
+
+# --- historical() con la red simulada: mismas claves, sin tocar Yahoo ---
+CIERRES_NET = [None if i == 40 else c for i, c in enumerate(CIERRES)]
+_payload_h23 = {
+    "chart": {"result": [{
+        "timestamp": [1756684800 + i * 86400 for i in range(len(CIERRES))],
+        "indicators": {"quote": [{"close": CIERRES_NET,
+                                  "high": [v.high for v in VELAS],
+                                  "low": [v.low for v in VELAS]}]},
+    }]}
+}
+_get_json_orig = mer._get_json
+mer._get_json = lambda url: _payload_h23
+try:
+    hist23 = mer.historical("TEST", "1y", "1d", include_series=False)
+finally:
+    mer._get_json = _get_json_orig
+
+check("HU-23: historical() expone atr_14, bollinger y macd ademas de sma/rsi",
+      all(k in hist23 for k in ("atr_14", "bollinger_upper", "bollinger_lower",
+                                "macd", "macd_signal", "sma_50", "sma_200", "rsi_14")),
+      str({k: hist23.get(k) for k in ("atr_14", "bollinger_upper", "bollinger_lower",
+                                      "macd", "macd_signal")}))
+limpios23 = [c for c in CIERRES_NET if c is not None]
+velas23 = [v for i, v in enumerate(VELAS) if i != 40]
+bb23 = ind.BB(20, 2.0, limpios23).last()
+macd23 = ind.MACD(12, 26, 9, limpios23).last()
+check("HU-23: los indicadores de historical() salen de indicators.py",
+      hist23["sma_50"] == round(ind.SMA(50, limpios23).last(), 4)
+      and hist23["rsi_14"] == round(ind.RSI(14, limpios23).last(), 1)
+      and hist23["atr_14"] == round(ind.ATR(14, velas23).last(), 4)
+      and hist23["bollinger_upper"] == round(bb23.ub, 4)
+      and hist23["bollinger_lower"] == round(bb23.lb, 4)
+      and hist23["macd"] == round(macd23.macd, 4)
+      and hist23["macd_signal"] == round(macd23.signal, 4),
+      str({k: hist23.get(k) for k in ("sma_50", "rsi_14", "atr_14", "bollinger_upper",
+                                      "bollinger_lower", "macd", "macd_signal")}))
+check("HU-23: el cierre nulo se salta y las medias siguen cuadrando con la media simple",
+      hist23["observations"] == 259
+      and hist23["sma_50"] == round(sum(limpios23[-50:]) / 50, 4),
+      f"obs={hist23['observations']} sma50={hist23['sma_50']}")
+
+# --- pilar Momentum con los indicadores nuevos ---
+MOM_BASE = {"sma_50": 100, "sma_200": 90, "period_return_pct": 10, "rsi_14": 55}
+base_sub, _ = scoring._momentum(MOM_BASE, 100)
+sub_macd, det_macd = scoring._momentum(dict(MOM_BASE, macd=3.0, macd_signal=1.0), 100)
+check("HU-23: Momentum puntua el MACD por encima de su senal",
+      sub_macd is not None and sub_macd > base_sub
+      and any(d["metric"] == "macd" for d in det_macd),
+      f"base={base_sub} con macd={sub_macd}")
+sub_macd_baj, _ = scoring._momentum(dict(MOM_BASE, macd=1.0, macd_signal=3.0), 100)
+check("HU-23: Momentum penaliza el MACD por debajo de su senal",
+      sub_macd_baj is not None and sub_macd_baj < base_sub,
+      f"base={base_sub} con macd bajista={sub_macd_baj}")
+
+sub_sobre, det_bb = scoring._momentum(
+    dict(MOM_BASE, bollinger_upper=90, bollinger_lower=80), 95)
+check("HU-23: Momentum lee el precio por encima de la banda alta como sobrecomprado",
+      sub_sobre is not None and sub_sobre < base_sub
+      and any(d["metric"] == "bollinger_pct_b" for d in det_bb),
+      f"base={base_sub} sobre banda={sub_sobre}")
+sub_bajo, _ = scoring._momentum(
+    dict(MOM_BASE, bollinger_upper=90, bollinger_lower=80), 70)
+check("HU-23: Momentum lee el precio por debajo de la banda baja como sobrevendido",
+      sub_bajo is not None and sub_bajo > base_sub,
+      f"base={base_sub} bajo banda={sub_bajo}")
+
+sub_ruido, det_atr = scoring._momentum(dict(MOM_BASE, atr_14=20), 100)
+check("HU-23: Momentum penaliza un ATR extremo (>10% del precio)",
+      sub_ruido is not None and sub_ruido < base_sub
+      and any(d["metric"] == "atr_pct" for d in det_atr),
+      f"base={base_sub} atr 20%={sub_ruido}")
+sub_calma, _ = scoring._momentum(dict(MOM_BASE, atr_14=1), 100)
+check("HU-23: un ATR normal no cambia el pilar (solo castiga el ruido extremo)",
+      sub_calma == base_sub, f"base={base_sub} atr 1%={sub_calma}")
+
+sub_nulos, _ = scoring._momentum(
+    dict(MOM_BASE, atr_14=None, macd=None, macd_signal=None,
+         bollinger_upper=None, bollinger_lower=None), 100)
+check("HU-23: un indicador sin dato se salta, no puntua 0 (el pilar no baja)",
+      sub_nulos == base_sub, f"base={base_sub} con nulos={sub_nulos}")
 
 # ------------------------------------------------- preguntar a Claude (HU-32)
 print("\n== contexto para Claude (app/llm.py) ==")
@@ -1291,6 +1558,84 @@ check("el sondeo de cobertura no excluye un mercado con buena cobertura",
 
 shutil.rmtree(_GEM_DB_DIR, ignore_errors=True)
 
+# ---------------------------------------------------------------- alertas (HU-25)
+print("\n== alertas: evaluacion pura ==")
+
+
+def alerta_hu25(**campos):
+    base = {"id": 1, "ticker": "ITX.MC", "metric": "rsi_14", "operator": "below",
+            "threshold": 30, "active": True, "armed": True, "last_triggered_at": None}
+    base.update(campos)
+    return base
+
+
+def aplicar_hu25(alertas, updates):
+    """Replica lo que hace alerts_apply() con la base, para poder encadenar
+    evaluaciones sin I/O: la pura decide, la persistente guarda."""
+    for u in updates:
+        for a in alertas:
+            if a["id"] == u["id"]:
+                a["armed"] = bool(u["armed"])
+                a["last_triggered_at"] = u["last_triggered_at"]
+
+
+LECTURAS = {"ITX.MC": {"rsi_14": 28.4}, "AAPL": {"price": 151.0}}
+PENDIENTES = [alerta_hu25(), alerta_hu25(id=2, ticker="AAPL", metric="price",
+                                          operator="above", threshold=150),
+              alerta_hu25(id=3, ticker="AAPL", metric="price", operator="above",
+                          threshold=1, active=False)]
+
+disparo = finsrv.evaluate_alerts(PENDIENTES, LECTURAS, now="2026-09-26T10:00:00")
+check("HU-25: cuando la condicion se cumple, la alerta dispara con su lectura",
+      len(disparo["fired"]) == 2 and all(f["value"] is not None for f in disparo["fired"])
+      and {f["id"] for f in disparo["fired"]} == {1, 2}, str(disparo)[:250])
+check("HU-25: la frase describe un hecho, nunca aconseja",
+      next(f for f in disparo["fired"] if f["id"] == 1)["text"] == "RSI de ITX.MC bajo 30"
+      and not any(p in f["text"].lower()
+                  for f in disparo["fired"]
+                  for p in ("compra", "vende", "conviene", "momento de")),
+      str([f["text"] for f in disparo["fired"]]))
+check("HU-25: una alerta pausada no dispara aunque su condicion se cumpla",
+      not any(f["id"] == 3 for f in disparo["fired"]), str(disparo["fired"]))
+check("HU-25: cada disparo deja la alerta desarmada con su hora",
+      len(disparo["updates"]) == 2
+      and all(u["armed"] == 0 and u["last_triggered_at"] == "2026-09-26T10:00:00"
+              for u in disparo["updates"]), str(disparo["updates"]))
+
+aplicar_hu25(PENDIENTES, disparo["updates"])
+segunda = finsrv.evaluate_alerts(PENDIENTES, LECTURAS, now="2026-09-26T10:01:00")
+check("HU-25: con la condicion aun cumplida no vuelve a avisar (disparo unico)",
+      segunda["fired"] == [] and segunda["updates"] == [], str(segunda))
+aplicar_hu25(PENDIENTES, segunda["updates"])
+
+calmado = finsrv.evaluate_alerts(
+    PENDIENTES, {"ITX.MC": {"rsi_14": 55}, "AAPL": {"price": 100}},
+    now="2026-09-26T10:02:00")
+check("HU-25: cuando la condicion deja de cumplirse se rearma en silencio",
+      calmado["fired"] == [] and len(calmado["updates"]) == 2
+      and all(u["armed"] == 1 for u in calmado["updates"]), str(calmado))
+aplicar_hu25(PENDIENTES, calmado["updates"])
+
+vuelve = finsrv.evaluate_alerts(PENDIENTES, LECTURAS, now="2026-09-26T10:03:00")
+check("HU-25: rearmed, vuelve a poder avisar cuando se cumpla otra vez",
+      {f["id"] for f in vuelve["fired"]} == {1, 2}, str(vuelve["fired"]))
+
+sin_lectura = finsrv.evaluate_alerts([alerta_hu25()], {"ITX.MC": {}},
+                                     now="2026-09-26T10:04:00")
+check("HU-25: sin lectura se reporta como no disponible, nunca se inventa un valor",
+      sin_lectura["fired"] == [] and sin_lectura["updates"] == []
+      and sin_lectura["unavailable"] == [{"id": 1, "ticker": "ITX.MC", "metric": "rsi_14"}],
+      str(sin_lectura))
+
+en_umbral = finsrv.evaluate_alerts([alerta_hu25(metric="price", operator="above", threshold=150)],
+                                   {"ITX.MC": {"price": 150}}, now="2026-09-26T10:05:00")
+check("HU-25: justo en el umbral no se dispara: hay que cruzarlo",
+      en_umbral["fired"] == [] and en_umbral["updates"] == [], str(en_umbral))
+por_debajo = finsrv.evaluate_alerts([alerta_hu25(metric="price", operator="below", threshold=150)],
+                                    {"ITX.MC": {"price": 149.99}}, now="2026-09-26T10:06:00")
+check("HU-25: por debajo del umbral, 'below' si dispara",
+      len(por_debajo["fired"]) == 1, str(por_debajo))
+
 # ------------------------------------------------------------------- catalogo (HU-10)
 print("\n== catalogo local de simbolos (sin red) ==")
 import symbols  # noqa: E402
@@ -1347,6 +1692,119 @@ check("cada entrada trae nombre e indices",
       str([s for s in stocks if not s.get("name") or not s.get("indices")][:3]))
 check("universo.json declara fuente y fecha", bool(universo.get("source")) and bool(universo.get("as_of")),
       str({"source": universo.get("source"), "as_of": universo.get("as_of")}))
+
+# --------------------------------------------- metricas de cartera (HU-24, puras)
+print("\n== metricas de cartera: metrics.py y serie punto-en-el-tiempo (HU-24) ==")
+import metrics  # noqa: E402
+
+# Valores conocidos, calculados a mano: ver la docstring de metrics.py para la formula.
+check("max_drawdown([-0.10, +0.05, -0.50]) = -0.5275",
+      abs(metrics.max_drawdown([-0.10, 0.05, -0.50]) + 0.5275) < 1e-9,
+      str(metrics.max_drawdown([-0.10, 0.05, -0.50])))
+check("calmar sobre la misma serie a 3 periodos/ano = -1.0",
+      abs(metrics.calmar([-0.10, 0.05, -0.50], 3) + 1.0) < 1e-9,
+      str(metrics.calmar([-0.10, 0.05, -0.50], 3)))
+check("sharpe([0.10, 0.00]) a 2 periodos/ano = 1.0",
+      abs(metrics.sharpe([0.10, 0.00], 2) - 1.0) < 1e-9, str(metrics.sharpe([0.10, 0.00], 2)))
+check("sortino([0.10, -0.10]) a 2 periodos/ano = -0.1",
+      abs(metrics.sortino([0.10, -0.10], 2) + 0.1) < 1e-9, str(metrics.sortino([0.10, -0.10], 2)))
+check("sharpe sin volatilidad no inventa un numero (None, no 1e16)",
+      metrics.sharpe([0.05, 0.05, 0.05], 3) is None, str(metrics.sharpe([0.05, 0.05, 0.05], 3)))
+check("sortino sin caidas devuelve None",
+      metrics.sortino([0.05, 0.05], 2) is None, str(metrics.sortino([0.05, 0.05], 2)))
+check("calmar sin drawdown devuelve None",
+      metrics.calmar([0.05, 0.05], 2) is None, str(metrics.calmar([0.05, 0.05], 2)))
+check("summary devuelve la tasa libre de riesgo usada, nunca una constante escondida",
+      metrics.summary([0.10, 0.00], 2)["risk_free_rate"] == metrics.RISK_FREE_RATE
+      and metrics.summary([0.10, 0.00], 2)["sharpe"] == 1.0,
+      str(metrics.summary([0.10, 0.00], 2)))
+check("SEALOCK_RISK_FREE_RATE mueve el sharpe (la tasa es un mando, no un hardcode)",
+      metrics.sharpe([0.10, 0.00], 2, risk_free_rate=0.10) is not None
+      and abs(metrics.sharpe([0.10, 0.00], 2, risk_free_rate=0.10)) < 1e-9,
+      str(metrics.sharpe([0.10, 0.00], 2, risk_free_rate=0.10)))
+
+# El factor de anualizacion sale de las fechas, nunca de un 252 supuesto: Yahoo
+# devuelve datos muestreados y una peticion "diaria" puede volver trimestral.
+_FECHAS_TRIM = ["2024-03-01", "2024-06-01", "2024-09-01", "2024-12-01", "2025-03-01",
+                "2025-06-01", "2025-09-01", "2025-12-01", "2026-03-01", "2026-06-01",
+                "2026-09-01"]
+_FECHAS_MES = ["2025-01-01", "2025-02-01", "2025-03-01", "2025-04-01", "2025-05-01",
+               "2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01", "2025-10-01",
+               "2025-11-01", "2025-12-01", "2026-01-01"]
+check("periods_per_year_from_dates: 11 puntos trimestrales en 2,5 anos -> ~4, no 252",
+      abs(metrics.periods_per_year_from_dates(_FECHAS_TRIM) - 4.0) < 0.2,
+      str(metrics.periods_per_year_from_dates(_FECHAS_TRIM)))
+check("periods_per_year_from_dates: 13 puntos mensuales en 1 ano -> 12",
+      abs(metrics.periods_per_year_from_dates(_FECHAS_MES) - 12.0) < 0.5,
+      str(metrics.periods_per_year_from_dates(_FECHAS_MES)))
+check("periods_per_year_from_dates: con menos de 2 fechas no inventa nada",
+      metrics.periods_per_year_from_dates(["2025-01-01"]) is None
+      and metrics.periods_per_year_from_dates([]) is None, "")
+
+_TRI = [0.05, -0.02, 0.08, -0.01, 0.04, 0.02, -0.03, 0.06, 0.01, -0.02]
+_res = metrics.summary(_TRI, metrics.periods_per_year_from_dates(_FECHAS_TRIM))
+check("regresion: una serie trimestral no anualiza como si fuera diaria (Sharpe legible)",
+      _res["sharpe"] is not None and abs(_res["sharpe"]) < 10
+      and abs(_res["annualized_return_pct"]) < 100, str(_res))
+
+# --- HU-26 aplicada a la serie de valor: la posicion de cada fecha, no la de hoy ---
+_TRADES = [
+    {"date": "2026-01-02", "id": 1, "ticker": "AAA", "action": "buy", "quantity": 10},
+    {"date": "2026-01-06", "id": 2, "ticker": "BBB", "action": "buy", "quantity": 5},
+]
+_CLOSES = {
+    "AAA": {"2026-01-02": 10, "2026-01-05": 11, "2026-01-06": 12, "2026-01-07": 13},
+    "BBB": {"2026-01-02": 100, "2026-01-05": 100, "2026-01-06": 20, "2026-01-07": 20},
+}
+_vals = servidor.value_series(_TRADES, _CLOSES)
+check("HU-26: la serie solo cuenta la posicion ya comprada en cada fecha",
+      [round(v, 2) for _, v in _vals] == [100.0, 110.0, 220.0, 230.0], str(_vals))
+check("HU-26: las fechas salen de los precios, sin rellenar huecos",
+      [d for d, _ in _vals] == ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"], str(_vals))
+check("returns_of devuelve v[i]/v[i-1]-1",
+      [round(r, 6) for r in servidor.returns_of(_vals)] == [0.1, 1.0, 0.045455],
+      str(servidor.returns_of(_vals)))
+
+check("HU-26: _rate_at toma el ultimo tipo anterior a la fecha, nunca el posterior",
+      servidor._rate_at({"2026-01-02": 1.0, "2026-01-09": 99.0}, "2026-01-05") == 1.0
+      and servidor._rate_at({"2026-01-02": 1.0, "2026-01-09": 99.0}, "2026-01-09") == 99.0,
+      str(servidor._rate_at({"2026-01-02": 1.0, "2026-01-09": 99.0}, "2026-01-05")))
+_fx = servidor.value_series(
+    [{"date": "2026-01-05", "id": 1, "ticker": "AAA", "action": "buy", "quantity": 1}],
+    {"AAA": {"2026-01-02": 10, "2026-01-05": 10}},
+    {"AAA": {"2026-01-02": 1.0, "2026-01-05": 1.0, "2026-01-09": 99.0}},
+)
+check("HU-26: un tipo de cambio posterior no contamina el valor de hoy",
+      _fx == [("2026-01-05", 10.0)], str(_fx))
+
+# --- HU-29: la curva de la cartera trae valor y coste de las mismas acciones ---
+_TRADES_29 = [
+    {"date": "2026-01-02", "id": 1, "ticker": "AAA", "action": "buy",
+     "quantity": 10, "price": 10, "commission": 2},
+    {"date": "2026-01-06", "id": 2, "ticker": "AAA", "action": "sell",
+     "quantity": 4, "price": 20, "commission": 1},
+]
+_CLOSES_29 = {"AAA": {"2026-01-01": 9, "2026-01-02": 10, "2026-01-05": 12,
+                      "2026-01-06": 20, "2026-01-07": 30}}
+_hist = servidor.portfolio_history(_TRADES_29, _CLOSES_29)
+check("HU-29: solo hay fechas con precio a partir de la primera compra",
+      [d for d, _, _ in _hist] == ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"],
+      str(_hist))
+check("HU-29: coste = precio + comision, y tras vender el resto baja al precio medio",
+      [round(c, 2) for _, _, c in _hist] == [102.0, 102.0, 61.2, 61.2], str(_hist))
+check("HU-29: la plusvalia de cada fecha es valor menos coste de esa misma fecha",
+      [round(v - c, 2) for _, v, c in _hist] == [-2.0, 18.0, 58.8, 118.8], str(_hist))
+check("HU-29: el lado de valor es el mismo value_series de siempre",
+      servidor.value_series(_TRADES_29, _CLOSES_29) == [(d, v) for d, v, _ in _hist],
+      str(servidor.value_series(_TRADES_29, _CLOSES_29)))
+_hist_fx = servidor.portfolio_history(
+    [{"date": "2026-01-05", "id": 1, "ticker": "AAA", "action": "buy",
+      "quantity": 1, "price": 10}],
+    {"AAA": {"2026-01-05": 10, "2026-01-09": 12}},
+    {"AAA": {"2026-01-05": 2.0, "2026-01-09": 99.0}},
+)
+check("HU-29: el coste usa el tipo de cambio del dia, nunca uno posterior",
+      _hist_fx == [("2026-01-05", 20.0, 20.0), ("2026-01-09", 1188.0, 990.0)], str(_hist_fx))
 
 shutil.rmtree(TEST_DIR, ignore_errors=True)
 

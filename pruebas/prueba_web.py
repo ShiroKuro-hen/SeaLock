@@ -44,6 +44,20 @@ def check(label, condition, detail="", critical=True):
         print(f"  AVISO {label}  {detail}")
 
 
+def _colors_outside_vars(css):
+    """Hex or rgba used outside a `--custom-property:` definition. HU-15 wants the
+    palette to live only in the variables block, so a loose color is a defect."""
+    loose = []
+    for line in css.splitlines():
+        if not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", line):
+            continue
+        head = line.split(":", 1)[0]
+        if head.strip().startswith("--"):
+            continue
+        loose.append(line.strip())
+    return loose
+
+
 def request(path, data=None, token=None, headers=None):
     body = json.dumps(data or {}).encode() if data is not None else None
     req = urllib.request.Request(BASE + path, data=body, method="POST" if body else "GET")
@@ -152,6 +166,51 @@ try:
         check("calcula peso y P&L", pos[0]["weight_pct"] == 100.0 and pos[0]["gain"] is not None,
               str(pos[0]), critical=False)
 
+    # HU-24: metricas de cartera contra ^IBEX. Una operacion antigua deja la serie con
+    # mas de un punto, que es lo minimo para que las metricas tengan algo que medir.
+    code, r = call("/api/finance/trade_create",
+                   {"ticker": "MSFT", "action": "buy", "quantity": 2, "price": 300,
+                    "date": "2024-01-02", "currency": "USD"})
+    check("registra una operacion antigua para la serie de cartera", code == 200, str(r)[:150])
+
+    code, r = call("/api/app/portfolio_metrics", {})
+    pm = r["data"]
+    check("HU-24: portfolio_metrics responde con cartera y benchmark",
+          code == 200 and "portfolio" in pm and "benchmark" in pm and "not_converted" in pm,
+          str(r)[:250])
+    p = pm.get("portfolio")
+    check("HU-24: la tasa libre de riesgo sale junto a las metricas, nunca escondida",
+          p is None or "risk_free_rate" in p, str(p)[:200], critical=False)
+    if p:
+        check("HU-24: la cartera trae sharpe/sortino/calmar y max drawdown (red)",
+              all(k in p for k in ("sharpe", "sortino", "calmar", "max_drawdown_pct")),
+              str(p)[:250], critical=False)
+        check("HU-24: el benchmark se compara en la misma ventana (red)",
+              (pm.get("benchmark") or {}).get("date_from") is not None,
+              str(pm.get("benchmark"))[:200], critical=False)
+    else:
+        check("HU-24: sin serie medible lo dice en vez de devolver un numero inventado",
+              "note" in pm and "risk_free_rate" not in pm, str(pm)[:200], critical=False)
+
+    # HU-29: la misma serie, en crudo, para la grafica de la pestana Cartera.
+    check("HU-29: portfolio_metrics trae la serie para la grafica",
+          isinstance(pm.get("series"), list), str(type(pm.get("series"))))
+    if pm.get("series"):
+        pt = pm["series"][0]
+        check("HU-29: cada punto trae fecha, valor, coste y plusvalia",
+              all(k in pt for k in ("date", "value", "cost", "gain"))
+              and abs((pt["value"] - pt["cost"]) - pt["gain"]) < 0.05, str(pt))
+        hoy = time.strftime("%Y-%m-%d")
+        check("HU-29: la serie no mira hacia delante: ninguna fecha posterior a hoy",
+              all(p["date"] <= hoy for p in pm["series"]),
+              str([p["date"] for p in pm["series"] if p["date"] > hoy][:3]))
+    else:
+        check("HU-29: sin serie medible lo dice, no inventa puntos",
+              "note" in pm, str(pm)[:200], critical=False)
+
+    code, _ = request("/api/app/portfolio_metrics", {})
+    check("rechaza portfolio_metrics sin token", code == 403, f"codigo={code}")
+
     code, r = call("/api/app/stock_detail", {"ticker": "AAPL"})
     f = r["data"]
     check("ficha completa con nota (red)",
@@ -175,6 +234,13 @@ try:
               str([(p["key"], p["subscore"]) for p in f["score"]["pillars"]]))
     check("la nota expone quarters_available y su aviso",
           "quarters_available" in f["score"], str(f["score"].get("quarters_available")))
+
+    hist_web = f.get("historical") or {}
+    check("HU-23: la ficha trae ATR, Bollinger y MACD ademas de medias y RSI (red)",
+          all(k in hist_web for k in ("atr_14", "bollinger_upper", "bollinger_lower",
+                                      "macd", "macd_signal")),
+          str({k: hist_web.get(k) for k in ("atr_14", "bollinger_upper", "macd")}),
+          critical=False)
 
     est = f.get("estimates") or {}
     check("la ficha trae las proyecciones de analistas (red)",
@@ -407,6 +473,93 @@ try:
     missing = {e.lower() for e in ui_labels} - {a.lower() for a in glossary_aliases}
     check("B4: todo label data-glosario tiene entrada en glosario",
           not missing, f"Faltan: {missing}" if missing else "")
+
+    # HU-23: los tres indicadores nuevos se pintan en la ficha y el glosario
+    # los explica (B4 ya exigiria la entrada; aqui se comprueba lo contrario).
+    js_busca = ('metrica("ATR 14"', 'metrica("Bollinger %B"', 'metrica("MACD"')
+    gl_busca = ('titulo: "ATR"', 'titulo: "Bollinger"', 'titulo: "MACD"')
+    check("HU-23: la ficha muestra ATR, Bollinger %B y MACD, con su glosario",
+          all(s in app_js for s in js_busca) and all(s in glosario_js for s in gl_busca),
+          "falta alguna etiqueta en app.js o su entrada en glosario.js")
+
+    # HU-19: las cajas de carga dibujan un esqueleto con la forma del contenido, no
+    # un "Cargando…" suelto. Si alguien reintroduce el placeholder, esto falla.
+    css = open(os.path.join(ROOT, "app", "web", "estilo.css"), encoding="utf-8").read()
+    check("HU-19: helper de esqueleto usado en las cajas de carga",
+          "function esqueleto(" in app_js and app_js.count("esqueleto(") >= 6,
+          f"usos={app_js.count('esqueleto(')}")
+    check("HU-19: no queda ninguna caja con el placeholder 'Cargando…'",
+          'class="cargando"' not in app_js,
+          "quedan placeholders class=cargando")
+    check("HU-19: esqueleto con estilo y prefers-reduced-motion",
+          ".esqueleto" in css and "prefers-reduced-motion" in css,
+          "falta .esqueleto o prefers-reduced-motion")
+
+    # HU-16: nota como anillo, pilares ordenados por peso, sparkline y SVG accesible.
+    check("HU-16: hay anillo SVG de la nota y sparkline",
+          "function anilloSVG(" in app_js and "function sparklineSVG(" in app_js,
+          "faltan anilloSVG o sparklineSVG")
+    check("HU-16: los pilares se ordenan por peso, no por orden de llegada",
+          ".sort((a, b) => (b.weight || 0) - (a.weight || 0))" in app_js,
+          "no hay ordenacion de pilares por peso")
+    check("HU-16: la ficha pinta el sparkline del historico y las metricas de riesgo",
+          "sparklineSVG(h.closes" in app_js and 'metrica("Sharpe"' in app_js,
+          "la ficha no usa el sparkline o no muestra Sharpe")
+    svg_imgs = app_js.count('role="img"')
+    check("HU-16: toda grafica SVG trae role=img y texto alternativo",
+          svg_imgs >= 3 and 'aria-label="Nota' in app_js,
+          f"role=img x{svg_imgs}")
+
+    code, r = call("/api/app/sparklines", {"tickers": ["AAPL"]})
+    series = (r.get("data") or {}).get("series") or {}
+    check("HU-16: sparklines devuelve la serie de AAPL (red)",
+          code == 200 and len(series.get("AAPL") or []) > 2,
+          str(r)[:200], critical=False)
+    code, _ = request("/api/app/sparklines", {"tickers": ["AAPL"]})
+    check("rechaza sparklines sin token", code == 403, f"codigo={code}")
+
+    # HU-15: sistema de diseno y modo oscuro.
+    with open(os.path.join(ROOT, "app", "web", "index.html"), encoding="utf-8") as f:
+        index_html = f.read()
+    check("HU-15: el tema se fija antes del primer pintado y el interruptor esta en la cabecera",
+          "dataset.tema" in index_html and 'id="btn-tema"' in index_html,
+          "falta el script de arranque del tema o el boton")
+    check("HU-15: la eleccion de tema persiste en localStorage",
+          'localStorage.setItem("sealock-tema"' in app_js and 'localStorage.getItem("sealock-tema")' in index_html,
+          "no hay persistencia del tema")
+    check("HU-15: el tema por defecto sigue prefers-color-scheme",
+          "prefers-color-scheme" in index_html, "el arranque no mira el sistema")
+    check("HU-15: los colores viven solo en variables (ningun hex ni rgba suelto)",
+          _colors_outside_vars(css) == [], str(_colors_outside_vars(css)))
+    check("HU-15: escala tipografica de 6 tamanos, sin px sueltos",
+          len(re.findall(r"--t-[a-z0-9]+:", css)) >= 5
+          and not re.search(r"font(-size)?:\s*[0-9.]+px", css),
+          "quedan font-size en px o faltan tokens")
+    check("HU-15: cifras tabulares en importes y notas",
+          css.count("tabular-numeric") + css.count("tabular-nums") >= 5,
+          f"tabular-nums x{css.count('tabular-nums')}")
+
+    # HU-29: la grafica de evolucion vive en la pestana Cartera.
+    check("HU-29: caja de Evolucion en Cartera con su funcion de carga",
+          'id="evolucion-cartera"' in index_html
+          and "function loadEvolucion(" in app_js and "function evolucionHTML(" in app_js,
+          "falta la caja o las funciones")
+    check("HU-29: la grafica es SVG con role=img y texto alternativo",
+          "function evolucionSVG(" in app_js
+          and 'aria-label="Evolucion de la cartera' in app_js
+          and app_js.count('role="img"') >= 4,
+          f"role=img x{app_js.count('role=\"img\"')}")
+    check("HU-29: dibuja valor total y plusvalia latente con su linea de cero",
+          "yGanancia(0)" in app_js and "ev-leyenda" in app_js and "ev-alza" in app_js,
+          "falta la linea de cero o la leyenda")
+    check("HU-29: la curva usa la serie punto-en-el-tiempo y lo explica en la ayuda",
+          "punto en el tiempo" in app_js and "evolucion: {" in app_js
+          and 'data-section="evolucion"' in index_html,
+          "falta la ayuda de la serie")
+    bloque_evo = app_js.split("function evolucionSVG(")[1] if "function evolucionSVG(" in app_js else ""
+    check("HU-29: la grafica se pinta con variables de color, no con hex sueltos",
+          all(v in bloque_evo for v in ("var(--acento)", "var(--borde)"))
+          and _colors_outside_vars(css) == [], str(_colors_outside_vars(css)))
 
 finally:
     proc.terminate()

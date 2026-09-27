@@ -31,8 +31,10 @@ sys.path.insert(0, os.path.join(ROOT, "mcp"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import finanzas_server as fin  # noqa: E402
+import indicators  # noqa: E402
 import llm  # noqa: E402
 import mercado_server as mer  # noqa: E402
+import metrics  # noqa: E402
 import scoring  # noqa: E402
 import symbols  # noqa: E402
 
@@ -195,6 +197,215 @@ def portfolio_valued():
     }
 
 
+def _rate_at(rate, date):
+    """FX rate applying on `date`: a scalar, or the last one at-or-before `date`.
+    Never a later one — that would be look-ahead (HU-26)."""
+    if rate is None:
+        return 1.0
+    if isinstance(rate, dict):
+        usable = [d for d in rate if d <= date]
+        return rate[max(usable)] if usable else 1.0
+    return float(rate)
+
+
+def portfolio_history(trades, closes_by_ticker, to_base=None):
+    """Point-in-time (date, value, cost) of the portfolio (HU-26, chart of HU-29). Pure:
+    the caller supplies prices.
+
+    At date D only the positions already bought by D are counted, valued at D's close.
+    The cost side is the average-cost basis of *those same shares* (same rule as
+    `finanzas.portfolio_view`: a buy adds price+commission, a sell removes shares at the
+    average cost held, never at the sale price), so `value - cost` is a gain built only
+    from information available at D. `to_base[ticker]` is a scalar rate, a {date: rate}
+    series, or absent (= already in base); the same per-ticker rate prices both sides, and
+    a cost/quote currency mismatch is exactly what `portfolio_valued` reports as
+    `currency_mismatch`. A date where nothing prices is dropped rather than forward-filled:
+    filling would invent a value that was never quoted.
+    """
+    to_base = to_base or {}
+    events = {}
+    for t in sorted(trades, key=lambda x: (x["date"], x.get("id") or 0)):
+        events.setdefault(t["date"], []).append(t)
+
+    dates = sorted({d for series in closes_by_ticker.values() for d in series})
+    held, out, queue = {}, [], sorted(events)
+    for d in dates:
+        while queue and queue[0] <= d:
+            for t in events[queue.pop(0)]:
+                qty = float(t["quantity"])
+                state = held.setdefault(t["ticker"], [0.0, 0.0])  # [shares, cost basis]
+                if t["action"] == "buy":
+                    state[0] += qty
+                    # price/commission only feed the cost side; a value-only caller
+                    # (and the pure tests) can pass trades without them.
+                    state[1] += qty * float(t.get("price") or 0) + float(t.get("commission") or 0)
+                else:
+                    average = state[1] / state[0] if state[0] else 0.0
+                    state[1] -= average * qty
+                    state[0] -= qty
+        total, cost, priced = 0.0, 0.0, False
+        for ticker, (qty, basis) in held.items():
+            if abs(qty) < 1e-9:
+                continue
+            close = (closes_by_ticker.get(ticker) or {}).get(d)
+            if close is None:
+                continue
+            rate = _rate_at(to_base.get(ticker), d)
+            total += qty * close * rate
+            cost += basis * rate
+            priced = True
+        if priced:
+            out.append((d, total, cost))
+    return out
+
+
+def value_series(trades, closes_by_ticker, to_base=None):
+    """Daily portfolio value, point-in-time (HU-26): the value side of portfolio_history,
+    which is where both the metrics (HU-24) and the chart (HU-29) read from."""
+    return [(d, value) for d, value, _ in portfolio_history(trades, closes_by_ticker, to_base)]
+
+
+def returns_of(values):
+    """Simple period returns of a (date, value) series: v[i] / v[i-1] - 1."""
+    out = []
+    for i in range(1, len(values)):
+        prev = values[i - 1][1]
+        if prev:
+            out.append(values[i][1] / prev - 1.0)
+    return out
+
+
+_series_cache = {}
+
+
+def _closes(ticker, date_range="5y"):
+    """Daily closes {date: price}, cached 6h like _raw_inputs: building a portfolio
+    history is network-heavy and the UI must not hammer Yahoo for it. One bad ticker
+    comes back empty instead of failing the whole series.
+
+    `5y` and not `max`: Yahoo downsamples `max` to quarterly points, which is useless
+    as a daily value series. 5 years is what Sharpe/Sortino/Calmar are read over."""
+    key = (ticker, date_range)
+    now = time.time()
+    hit = _series_cache.get(key)
+    if hit and now - hit[0] < RAW_CACHE_TTL:
+        return hit[1]
+    try:
+        h = mer.historical(ticker=ticker, date_range=date_range, interval="1d", include_series=True)
+        rows = h.get("closes") or h.get("recent_closes") or []
+        series = {r["date"]: r["close"] for r in rows}
+    except Exception as exc:  # noqa: BLE001
+        series = {}
+        mer.log(f"[app] closes unavailable for {ticker}: {exc}")
+    _series_cache[key] = (now, series)
+    return series
+
+
+def _to_base(currency):
+    """{date: rate} turning `currency` into base, or 1.0 when already base. Empty dict
+    when the pair can't be fetched: the caller must say so, never assume parity."""
+    if not currency or currency == CURRENCY:
+        return 1.0
+    pair = _closes(f"{CURRENCY}{currency}=X")
+    return {d: 1.0 / v for d, v in pair.items() if v} or None
+
+
+def portfolio_metrics(benchmark="^IBEX"):
+    """Sharpe/Sortino/Calmar of the portfolio against a benchmark (HU-24), plus the raw
+    `series` the Cartera chart draws (HU-29).
+
+    The value series is point-in-time (HU-26): each date's close over the positions
+    already held by that date. Currencies that can't be converted are excluded and
+    reported, exactly like portfolio_valued — never summed as if they were equal.
+    """
+    trades = fin.sql_query("SELECT * FROM trades ORDER BY date, id", 100000)["rows"]
+    tickers = sorted({t["ticker"] for t in trades})
+    if not tickers:
+        return {"portfolio": None, "benchmark": None, "series": [],
+                "note": "Sin operaciones registradas."}
+
+    currencies = {}
+    try:
+        for q in mer.quote(tickers=tickers)["quotes"]:
+            currencies[q["ticker"]] = q.get("currency") or CURRENCY
+    except Exception as exc:  # noqa: BLE001 - fall back to the trade currency
+        mer.log(f"[app] quotes for currency unknown: {exc}")
+    for t in trades:
+        currencies.setdefault(t["ticker"], t.get("currency") or CURRENCY)
+
+    to_base, not_converted, closes = {}, [], {}
+    for ticker in tickers:
+        currency = currencies.get(ticker) or CURRENCY
+        rate = _to_base(currency)
+        if rate is None:
+            not_converted.append({"ticker": ticker, "currency": currency})
+            continue
+        series = _closes(ticker)
+        if series:
+            closes[ticker] = series
+            to_base[ticker] = rate
+
+    used = [t for t in trades if t["ticker"] in closes]
+    if not used:
+        return {
+            "portfolio": None, "benchmark": None, "series": [], "not_converted": not_converted,
+            "note": "Sin precios historicos para ninguna posicion: no hay serie que medir.",
+        }
+
+    history = portfolio_history(used, closes, to_base)
+    if not history:
+        return {
+            "portfolio": None, "benchmark": None, "series": [], "not_converted": not_converted,
+            "note": "Ninguna fecha con precio posterior a la primera operacion: no hay serie.",
+        }
+    values = [(d, v) for d, v, _ in history]
+    returns = returns_of(values)
+    # Annualize from the series' own spacing, never from an assumed 252: Yahoo
+    # downsamples long ranges and a "daily" request can come back quarterly.
+    ppy = metrics.periods_per_year_from_dates([d for d, _ in values]) or 252
+
+    bench = None
+    benchmark_returns = []
+    try:
+        bench_series = _closes(benchmark)
+        if bench_series and values:
+            lo, hi = values[0][0], values[-1][0]
+            window = [(d, c) for d, c in sorted(bench_series.items()) if lo <= d <= hi]
+            benchmark_returns = returns_of(window)
+            bench = {
+                "ticker": benchmark,
+                "date_from": window[0][0] if window else None,
+                "date_to": window[-1][0] if window else None,
+                **metrics.summary(benchmark_returns, ppy),
+            }
+    except Exception as exc:  # noqa: BLE001 - a missing benchmark must not hide ours
+        mer.log(f"[app] benchmark {benchmark} unavailable: {exc}")
+
+    return {
+        "portfolio": {
+            "date_from": values[0][0],
+            "date_to": values[-1][0],
+            "observations": len(returns),
+            "start_value": round(values[0][1], 2),
+            "end_value": round(values[-1][1], 2),
+            **metrics.summary(returns, ppy),
+        },
+        "benchmark": bench,
+        # The raw curve behind the metrics, for the chart (HU-29): one point per date
+        # with a price, value and cost of exactly the same shares.
+        "series": [
+            {"date": d, "value": round(v, 2), "cost": round(c, 2), "gain": round(v - c, 2)}
+            for d, v, c in history
+        ],
+        "currency": CURRENCY,
+        "not_converted": not_converted,
+        "note": (
+            "Metricas sobre una serie diaria de valor de cartera, construida con la "
+            "posicion de cada fecha (HU-26). No son asesoramiento."
+        ),
+    }
+
+
 def _position_snapshot(ticker, holding, quote_data):
     """Quantity/cost/current value for a single held ticker, using the quote already
     fetched for the ficha. No cross-currency conversion here (that full treatment
@@ -340,7 +551,8 @@ def _fetch_raw(ticker):
     except Exception as exc:  # noqa: BLE001
         raw["fundamentals"] = {"error": f"{type(exc).__name__}: {exc}"}
     try:
-        raw["historical"] = mer.historical(ticker=ticker, date_range="1y")
+        # include_series: the ficha draws a 1-year sparkline from the same call.
+        raw["historical"] = mer.historical(ticker=ticker, date_range="1y", include_series=True)
     except Exception:  # noqa: BLE001 - momentum pillar just skips
         raw["historical"] = {}
     try:
@@ -896,15 +1108,84 @@ def config():
     }
 
 
+def sparklines(tickers, date_range="1y"):
+    """Daily closes for several tickers, for the sparklines of a card grid (HU-16).
+    Batched on purpose: one request from the UI instead of N. Cached 6h in
+    `_series_cache`, so re-rendering a card grid is free. Failures come back as an
+    empty series, never as an error that hides the whole grid."""
+    out = {}
+    tickers = [t.upper().strip() for t in (tickers or []) if t]
+    if not tickers:
+        return {"series": out}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(tickers))) as ex:
+        for ticker, series in zip(tickers, ex.map(lambda t: _closes(t, date_range), tickers)):
+            out[ticker] = [{"date": d, "close": c} for d, c in sorted(series.items())]
+    return {"series": out}
+
+
+def alerts_evaluate():
+    """Evaluate the stored alerts against the latest readings (HU-25).
+
+    Only the web server can do this: `finance` has no network. Prices come from
+    one batched quote; the daily metrics (SMA 50/200, RSI 14) are computed from
+    the closes `_closes` already caches 6h, so a 60s loop costs one quote request
+    instead of one per alert. Reads facts, writes trigger states, and its answer
+    is only ever rendered as a fact: never as advice."""
+    alerts = fin.alerts_list()["alerts"]
+    active = [a for a in alerts if a["active"]]
+    if not active:
+        return {"ok": True, "evaluated": 0, "triggered": [], "unavailable": [],
+                "alerts": alerts, "any_market_open": False}
+
+    readings = {}
+    price_tickers = sorted({a["ticker"] for a in active if a["metric"] == "price"})
+    if price_tickers:
+        quotes = mer.quote(price_tickers).get("quotes", [])
+        for q in quotes:
+            if q.get("price") is not None:
+                readings.setdefault(q["ticker"], {})["price"] = q["price"]
+        # Gate for the 60s loop (same idea as the portfolio one): when every
+        # price alert sits in a closed market, polling again changes nothing.
+        # An unknown state counts as open: better to evaluate than to go quiet.
+        states = [q.get("status") for q in quotes]
+        any_open = any(s != "CLOSED" for s in states) if states else True
+    else:
+        # No price alert: the only readings are daily, from the 6h cache.
+        any_open = True
+
+    for ticker in sorted({a["ticker"] for a in active if a["metric"] != "price"}):
+        series = _closes(ticker, "5y")
+        closes = [c for _, c in sorted(series.items()) if c]
+        if not closes:
+            continue
+        daily = readings.setdefault(ticker, {})
+        if len(closes) >= 50:
+            daily["sma_50"] = indicators.SMA(50, closes).last()
+        if len(closes) >= 200:
+            daily["sma_200"] = indicators.SMA(200, closes).last()
+        if len(closes) > 14:
+            rsi = indicators.RSI(14, closes).last()
+            daily["rsi_14"] = round(rsi, 1) if rsi is not None else None
+
+    result = fin.evaluate_alerts(active, readings)
+    fin.alerts_apply(result["updates"])
+    return {"ok": True, "evaluated": len(active), "triggered": result["fired"],
+            "unavailable": result["unavailable"], "alerts": fin.alerts_list()["alerts"],
+            "any_market_open": any_open}
+
+
 API["app"] = {
     "portfolio_valued": portfolio_valued,
+    "portfolio_metrics": portfolio_metrics,
     "portfolio_scores": portfolio_scores,
     "stock_detail": stock_detail,
     "stock_news": stock_news,
+    "alerts_evaluate": alerts_evaluate,
     "recommendation_universe": recommendation_universe,
     "stock_scores": stock_scores,
     "recommendation_positions": recommendation_positions,
     "stock_compare": stock_compare,
+    "sparklines": sparklines,
     "gems_universe": gems_universe,
     "gems_scan_start": gems_scan_start,
     "gems_scan_status": gems_scan_status,

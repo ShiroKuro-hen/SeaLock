@@ -21,8 +21,8 @@ Instalado y verificado. Python 3.12.10 puesto, y las dos baterias de pruebas en 
 incluidas las que salen a internet.
 
 ```bash
-python pruebas/prueba_humo.py    # ~50 checks: finance (9 tools) + market (11 tools) + scoring.py puro (incl. recomendaciones)
-python pruebas/prueba_web.py     # ~31 checks: web API + defensas + B4 glosario + recomendaciones
+python pruebas/prueba_humo.py    # 262 checks: finance + market + scoring.py puro (incl. recomendaciones, Hidden Gems, metricas de cartera e indicadores tecnicos)
+python pruebas/prueba_web.py     # 111 checks: web API + defensas + B4 glosario + recomendaciones + Hidden Gems + indicadores + graficas SVG
 ```
 
 Usan bases de datos temporales, asi que no tocan tus datos reales.

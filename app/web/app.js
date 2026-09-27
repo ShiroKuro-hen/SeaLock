@@ -3,6 +3,10 @@
 const CURRENCY = window.SEALOCK.currency;
 let CURRENT_STOCK = null; // { ticker, assumptions, marketStatus } de la ultima ficha vista
 let PORTFOLIO_ANY_MARKET_OPEN = true; // gate del auto-refresco: sin nada abierto, no vale la pena sondear
+// HU-25: mismos dos gates que la cartera, pero para el bucle de alertas.
+let ALERTAS_ACTIVAS = 0; // cuantas hay pausadas no; 0 = no merece la pena evaluar
+let ALERTAS_ANY_MARKET_OPEN = true;
+let ALERTAS_DISPARADAS = []; // hechos ya comunicados, solo en memoria (nunca se guardan)
 let REC_RETURN_INDEX = null; // indice en REC_COMBINED si la ficha se abrio desde Recomendaciones
 
 /* ------------------------------------------------------------------ util */
@@ -39,9 +43,38 @@ function pct(v, dec = 1) {
   return `${v > 0 ? "+" : ""}${number(v, dec)} %`;
 }
 
+/** HU-23: %B de Bollinger, donde esta el precio entre las bandas (0 % = banda
+ *  baja, 100 % = alta). Sin bandas o sin precio no hay nada que pintar. */
+function bollingerPB(h, precio) {
+  const up = h.bollinger_upper, lo = h.bollinger_lower;
+  const p = precio ?? h.end_price;
+  if (up === null || up === undefined || lo === null || lo === undefined || !(up > lo)
+      || p === null || p === undefined) return "—";
+  return `${number(100 * (p - lo) / (up - lo), 0)} %`;
+}
+
 // CSS classes ("verde"/"rojo") stay Spanish: estilo.css defines .verde/.rojo/.ambar
 // and isn't part of this rename.
 const sign = (v) => (v === null || v === undefined ? "" : v > 0 ? "verde" : v < 0 ? "rojo" : "");
+
+/* Tema claro/oscuro (HU-15). El valor ya esta en <html data-tema> antes del pintado
+   (script inline del <head>); aqui solo se conmuta y se persiste. */
+function temaActual() {
+  return document.documentElement.dataset.tema === "claro" ? "claro" : "oscuro";
+}
+
+function aplicarTema(t) {
+  const tema = t === "claro" ? "claro" : "oscuro";
+  document.documentElement.dataset.tema = tema;
+  try { localStorage.setItem("sealock-tema", tema); } catch (e) { /* modo privado */ }
+  const btn = document.getElementById("btn-tema");
+  if (btn) {
+    btn.textContent = tema === "claro" ? "Tema: claro" : "Tema: oscuro";
+    btn.title = tema === "claro"
+      ? "Pasar a tema oscuro (ahora: claro)"
+      : "Pasar a tema claro (ahora: oscuro)";
+  }
+}
 
 function compact(v) {
   if (v === null || v === undefined) return "—";
@@ -283,8 +316,13 @@ function formData(form) {
   return d;
 }
 
-function loading(id) {
-  document.getElementById(id).innerHTML = '<div class="cargando">Cargando…</div>';
+/* Esqueleto de carga (HU-19): dibuja la forma del contenido que viene, no un texto. */
+function esqueleto(filas = 3) {
+  return `<div class="esqueleto" role="status" aria-label="Cargando">${"<i></i>".repeat(filas)}</div>`;
+}
+
+function loading(id, filas = 3) {
+  document.getElementById(id).innerHTML = esqueleto(filas);
 }
 
 function renderError(id, e, retry) {
@@ -340,7 +378,7 @@ async function loadProfile() {
 /* ---------------------------------------------------------------- CARTERA */
 
 async function loadPortfolio(silencioso = false) {
-  if (!silencioso) loading("tabla-cartera");
+  if (!silencioso) loading("tabla-cartera", 4);
   try {
     const d = await api("app", "portfolio_valued");
     PORTFOLIO_ANY_MARKET_OPEN = d.any_market_open !== false;
@@ -358,20 +396,19 @@ async function loadPortfolio(silencioso = false) {
         <div class="pie">ventas cerradas</div></div>` : "";
     document.querySelectorAll("#tarjetas-cartera [data-glosario]").forEach(makeFocusable);
 
-    let avisos = "";
-    if (d.no_price && d.no_price.length) {
-      avisos += `<div class="nota">Sin precio de mercado para ${esc(d.no_price.join(", "))}.
-        Esas posiciones no suman al total: el patrimonio mostrado es incompleto, no cero.</div>`;
-    }
-    if (d.currency_mismatch && d.currency_mismatch.length) {
-      avisos += `<div class="nota"><b>Revisa la moneda de estas operaciones:</b>
+    const avisos = document.getElementById("avisos-cartera");
+    if (avisos) {
+      // Contenedor fijo y sobrescrito: sin el, cada refresco de 60 s volvia a insertar
+      // los mismos avisos y se acumulaban debajo de las tarjetas.
+      avisos.innerHTML = (d.no_price && d.no_price.length ? `<div class="nota">Sin precio de mercado para ${esc(d.no_price.join(", "))}.
+        Esas posiciones no suman al total: el patrimonio mostrado es incompleto, no cero.</div>` : "")
+        + (d.currency_mismatch && d.currency_mismatch.length ? `<div class="nota"><b>Revisa la moneda de estas operaciones:</b>
         ${d.currency_mismatch.map((x) =>
           `${esc(x.ticker)} anotado en ${esc(x.cost_currency)} pero cotiza en
            ${esc(x.quote_currency)}`).join("; ")}.
         El P&L se calcula convirtiendo ambas a ${esc(CURRENCY)}, pero si te equivocaste al
-        registrar la compra el coste estara mal.</div>`;
+        registrar el coste estara mal.</div>` : "");
     }
-    if (avisos) document.getElementById("tarjetas-cartera").insertAdjacentHTML("afterend", avisos);
 
     document.getElementById("tabla-cartera").innerHTML = d.positions.length
       ? `<div class="tabla-scroll"><table>
@@ -429,6 +466,121 @@ async function loadPortfolioScores() {
   } catch (e) {
     // Silencioso: la tabla ya se mostro sin notas, no es un fallo bloqueante.
   }
+}
+
+/** Evolucion de la cartera (HU-29): la serie diaria de valor y plusvalia latente, mas las
+ *  metricas de riesgo frente al benchmark. Se carga al entrar en Cartera y al registrar
+ *  una operacion, no en el refresco de 60 s: la serie se arma con cierres diarios y no
+ *  cambia mientras el mercado no cierra. */
+async function loadEvolucion() {
+  const cont = document.getElementById("evolucion-cartera");
+  if (!cont) return;
+  loading("evolucion-cartera", 4);
+  try {
+    const d = await api("app", "portfolio_metrics");
+    cont.innerHTML = evolucionHTML(d);
+    cont.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
+  } catch (e) {
+    renderError("evolucion-cartera", e, loadEvolucion);
+  }
+}
+
+/** Caja "Evolucion de la cartera": curva + metricas de la misma serie. */
+function evolucionHTML(d) {
+  const serie = (d.series || []).filter((p) => Number.isFinite(p.value));
+  if (serie.length < 2) {
+    return `<div class="vacio">Sin historial todavia: la curva se arma con los cierres
+      diarios de los valores en cartera. <a href="#" data-help="evolucion">Como se calcula</a></div>`;
+  }
+  const p = d.portfolio || {};
+  const b = d.benchmark;
+  const ultimo = serie[serie.length - 1];
+  const m = (glos, k, v) => `<div class="metrica" data-glosario="${esc(glos)}">
+    <div class="k">${k}</div><div class="v">${v}</div></div>`;
+  return `
+    <div class="ev-leyenda"><span><i class="ev-valor"></i>Valor total</span>
+      <span><i class="${ultimo.gain >= 0 ? "ev-alza" : "ev-baja"}"></i>Plusvalia latente</span></div>
+    ${evolucionSVG(serie)}
+    <div class="metricas" style="margin-top:12px">
+      ${m("Rentabilidad anualizada", "Rentabilidad anualizada", pct(p.annualized_return_pct))}
+      ${m("Sharpe", "Sharpe", number(p.sharpe, 2))}
+      ${m("Sortino", "Sortino", number(p.sortino, 2))}
+      ${m("Calmar", "Calmar", number(p.calmar, 2))}
+      ${m("Volatilidad", "Volatilidad",
+        p.annualized_volatility_pct == null ? "—" : `${number(p.annualized_volatility_pct, 1)} %`)}
+      ${m("Max. caida", "Max. caida",
+        p.max_drawdown_pct == null ? "—" : `${number(p.max_drawdown_pct, 1)} %`)}
+    </div>
+    <div class="tenue" style="font-size:12px;margin-top:8px">
+      ${esc(serie[0].date)} → ${esc(ultimo.date)} · ${serie.length} puntos en ${esc(d.currency || CURRENCY)}.
+      ${b ? `Frente a ${esc(b.ticker)} en la misma ventana: rentabilidad anualizada ${pct(b.annualized_return_pct)} · Sharpe ${number(b.sharpe, 2)}.`
+          : "Sin indice de comparacion: no hay serie del benchmark en esta ventana."}
+      Tasa libre de riesgo usada: ${p.risk_free_rate == null ? "—" : `${number(p.risk_free_rate * 100, 2)} %`}.
+      Cada fecha usa la posicion ya comprada ese dia (punto en el tiempo), no la de hoy.
+      Seleccion mecanica sobre datos publicos, no es asesoramiento.
+    </div>`;
+}
+
+/** Curva SVG de la cartera: dos paneles con el mismo eje temporal, arriba el valor total
+ *  y abajo la plusvalia latente con su linea de cero. SVG inline, sin librerias; el
+ *  aria-label lleva las cifras, igual que el resto de graficas de la app. */
+function evolucionSVG(serie) {
+  const pts = serie.filter((p) => Number.isFinite(p.value));
+  if (pts.length < 2) return "";
+  // El ancho del viewBox sigue el de la caja: si no, la escala del SVG aplastaria (o
+  // inflaria) las etiquetas del eje en movil, donde el texto escala con la grafica.
+  const caja = document.getElementById("evolucion-cartera");
+  const W = Math.max(320, Math.min(720, (caja && caja.clientWidth) || 720));
+  const PAD = 6, H_TOP = 140, H_BOT = 84, GAP = 24, H_EJE = 20, T = 8;
+  const alto = T + H_TOP + GAP + H_BOT + H_EJE;
+  const ancho = W - PAD * 2;
+  const x = (i) => PAD + (i * ancho) / (pts.length - 1);
+
+  // Cada panel escala solo lo suyo: el valor (miles) y la plusvalia (a veces negativa)
+  // no caben en el mismo eje sin aplastar uno de los dos.
+  const escala = (arr, conCero) => {
+    let lo = Math.min(...arr), hi = Math.max(...arr);
+    if (conCero) { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+    if (hi - lo < 1e-9) hi = lo + 1;
+    const margen = (hi - lo) * 0.08;
+    return [lo - margen, hi + margen];
+  };
+  const valores = pts.map((q) => q.value);
+  const ganancias = pts.map((q) => (Number.isFinite(q.gain) ? q.gain : 0));
+  const [loV, hiV] = escala(valores, false);
+  const [loG, hiG] = escala(ganancias, true);
+  const yValor = (v) => T + H_TOP - ((v - loV) / (hiV - loV)) * H_TOP;
+  const baseG = T + H_TOP + GAP;
+  const yGanancia = (v) => baseG + H_BOT - ((v - loG) / (hiG - loG)) * H_BOT;
+  const linea = (vals, y) => vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+
+  const ultimo = pts[pts.length - 1];
+  const colorPlus = ultimo.gain >= 0 ? "var(--verde)" : "var(--rojo)";
+  const texto = `Valor total de ${compact(Math.min(...valores))} a ${compact(Math.max(...valores))} `
+    + `entre ${pts[0].date} y ${ultimo.date}; plusvalia latente de ${compact(ganancias[0])} `
+    + `a ${compact(ganancias[ganancias.length - 1])}, ${pts.length} puntos.`;
+  const area = `${linea(valores, yValor)} ${x(pts.length - 1).toFixed(1)},${(T + H_TOP).toFixed(1)} ${PAD},${(T + H_TOP).toFixed(1)}`;
+
+  return `<svg class="evolucion-svg" viewBox="0 0 ${W} ${alto}" role="img"
+    aria-label="Evolucion de la cartera: ${esc(texto)}">
+    <title>Evolucion de la cartera: ${esc(texto)}</title>
+    <polygon points="${area}" fill="var(--acento)" opacity="0.12"/>
+    <polyline points="${linea(valores, yValor)}" fill="none" stroke="var(--acento)"
+      stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <text class="ev-eje" x="${W - PAD}" y="${T + 10}" text-anchor="end">${compact(hiV)}</text>
+    <text class="ev-eje" x="${W - PAD}" y="${T + H_TOP - 2}" text-anchor="end">${compact(loV)}</text>
+    <line x1="${PAD}" y1="${yGanancia(0).toFixed(1)}" x2="${W - PAD}" y2="${yGanancia(0).toFixed(1)}"
+      stroke="var(--borde)" stroke-dasharray="4 4"/>
+    <text class="ev-eje" x="${PAD}" y="${(yGanancia(0) - 4).toFixed(1)}">0</text>
+    <polyline points="${linea(ganancias, yGanancia)}" fill="none" stroke="${colorPlus}"
+      stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${yGanancia(ganancias[ganancias.length - 1]).toFixed(1)}"
+      r="3" fill="${colorPlus}"/>
+    <text class="ev-eje" x="${W - PAD}" y="${baseG + 10}" text-anchor="end">${compact(hiG)}</text>
+    <text class="ev-eje" x="${W - PAD}" y="${baseG + H_BOT - 2}" text-anchor="end">${compact(loG)}</text>
+    <text class="ev-eje" x="${PAD}" y="${alto - 4}">${esc(pts[0].date)}</text>
+    <text class="ev-eje" x="${W - PAD}" y="${alto - 4}" text-anchor="end">${esc(ultimo.date)}</text>
+  </svg>`;
 }
 
 /** Exporta cartera, seguimiento y revisiones. Todo se resuelve en el navegador: el
@@ -500,10 +652,105 @@ async function loadWatchlist() {
   }
 }
 
+/* --------------------------------------------------------------- ALERTAS (HU-25) */
+
+/** Los disparos ya comunicados, como hechos con su lectura. El texto redacta el
+ *  servidor (`text` de cada fila): aqui solo se formatea y se escapa. */
+function pintarAlertasDisparadas() {
+  const box = document.getElementById("avisos-alertas");
+  if (!box) return;
+  box.innerHTML = ALERTAS_DISPARADAS.length
+    ? `<div class="nota"><b>Alertas disparadas</b> — ${ALERTAS_DISPARADAS.map((t) =>
+        `${esc(t.text)} (${number(t.value, t.metric === "rsi_14" ? 1 : 2)})`).join(" · ")}
+        <button class="mini" id="btn-descartar-alertas">Descartar</button></div>`
+    : "";
+  const btn = document.getElementById("btn-descartar-alertas");
+  if (btn) btn.addEventListener("click", () => { ALERTAS_DISPARADAS = []; pintarAlertasDisparadas(); });
+}
+
+function renderAlertas(alerts) {
+  alerts = alerts || [];
+  ALERTAS_ACTIVAS = alerts.filter((a) => a.active).length;
+  const cont = document.getElementById("tabla-alertas");
+  if (!cont) return;
+  cont.innerHTML = alerts.length
+    ? `<div class="tabla-scroll"><table>
+        <thead><tr><th>Ticker</th><th>Condicion</th><th>Estado</th><th>Ultima vez</th><th></th></tr></thead>
+        <tbody>${alerts.map((a) => `
+          <tr class="${a.active ? "" : "tenue"}">
+            <td><span class="ticker">${esc(a.ticker)}</span></td>
+            <td>${esc(a.text)}</td>
+            <td>${a.active ? "Activa" : "Pausada"}</td>
+            <td class="tenue">${a.last_triggered_at ? esc(a.last_triggered_at.replace("T", " ")) : "—"}</td>
+            <td class="num">
+              <button class="mini" data-alerta-toggle="${a.id}">${a.active ? "Pausar" : "Activar"}</button>
+              <button class="mini peligro" data-alerta-borrar="${a.id}">Borrar</button></td>
+          </tr>`).join("")}
+        </tbody></table></div>`
+    : '<div class="vacio">Sin alertas. Crea una abajo y avisara el dia que se cumpla.</div>';
+
+  cont.querySelectorAll("[data-alerta-toggle]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await api("finance", "alert_toggle", { id: Number(b.dataset.alertaToggle) });
+        loadAlertas();
+      } catch (e) { notify(e.message, "malo"); }
+    }));
+  cont.querySelectorAll("[data-alerta-borrar]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const id = Number(b.dataset.alertaBorrar);
+      try {
+        // Sin confirm el servidor solo devuelve el registro (HU-21): primero se
+        // muestra, y solo despues de aceptar se manda la borrada de verdad.
+        const pend = await api("finance", "alert_delete", { id });
+        if (!pend.ok || !pend.alert) throw new Error(pend.error || "No se pudo leer la alerta");
+        const ok = await confirmDialog(
+          `¿Borrar la alerta "${pend.alert.text}"? Se dejara de vigilar ese umbral.`);
+        if (!ok) return;
+        await api("finance", "alert_delete", { id, confirm: true });
+        loadAlertas();
+      } catch (e) { notify(e.message, "malo"); }
+    }));
+}
+
+/** Evalua las alertas en el servidor y repinta. `manual` = venia del boton o de
+ *  abrir la pestana: entonces se evalua aunque el mercado este cerrado, porque
+ *  quien lo pide quiere la respuesta ahora. En el bucle de 60s (manual=false)
+ *  manda el gate: sin alertas activas o con todo cerrado, no se sondea nada. */
+async function evaluarAlertas(manual = false) {
+  if (!manual && (!ALERTAS_ACTIVAS || !ALERTAS_ANY_MARKET_OPEN)) return false;
+  try {
+    const d = await api("app", "alerts_evaluate");
+    ALERTAS_ANY_MARKET_OPEN = d.any_market_open !== false;
+    if (d.triggered && d.triggered.length) {
+      ALERTAS_DISPARADAS = [...d.triggered, ...ALERTAS_DISPARADAS].slice(0, 8);
+      pintarAlertasDisparadas();
+      notify(`Alerta: ${d.triggered[0].text}`);
+    }
+    renderAlertas(d.alerts);
+    return true;
+  } catch (e) {
+    if (manual) notify(e.message, "malo");
+    return false;
+  }
+}
+
+/** Pinta la caja de Alertas. Si la evaluacion falla (Yahoo caido, por ejemplo),
+ *  la lista se sirve igual desde la base local: las alertas no dejan de verse. */
+async function loadAlertas() {
+  if (await evaluarAlertas(true)) return;
+  try {
+    const d = await api("finance", "alerts_list");
+    renderAlertas(d.alerts);
+  } catch (e) {
+    renderError("tabla-alertas", e, () => loadAlertas());
+  }
+}
+
 /* --------------------------------------------------------------- ACCIONES */
 
 async function search(query) {
-  loading("resultados-busqueda");
+  loading("resultados-busqueda", 3);
   try {
     const d = await api("market", "ticker_search", { query });
     if (!d.results.length) {
@@ -570,7 +817,7 @@ function renderNews() {
     b.setAttribute("aria-selected", b.dataset.newsTab === NEWS.tab);
   });
   const d = NEWS.data;
-  if (!d) { lista.innerHTML = '<div class="cargando">Cargando noticias…</div>'; return; }
+  if (!d) { lista.innerHTML = esqueleto(4); return; }
   const items = d[NEWS.tab] || [];
   if (d.error || (!(d.company || []).length && !(d.sector || []).length)) {
     lista.innerHTML = `<div class="vacio">No se pudieron cargar noticias.
@@ -609,7 +856,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
   if (!silencioso) { REC_RETURN_INDEX = fromRec; GEM_RETURN_INDEX = fromGem; }
 
   if (!silencioso) {
-    cont.innerHTML = `<div class="caja"><div class="cargando">Analizando ${esc(ticker)}…</div></div>`;
+    cont.innerHTML = `<div class="caja">${esqueleto(6)}</div>`;
     cont.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -673,13 +920,20 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       <div class="rejilla-2">
         <div class="caja">
           <h2>Comportamiento (1 año)</h2>
+          ${sparklineSVG(h.closes || h.recent_closes, "var(--acento)", 280, 56)}
           <div class="metricas">
             ${metrica("Rentabilidad", h.period_return_pct !== undefined ? pct(h.period_return_pct) : "—")}
             ${metrica("Volatilidad", h.annualized_volatility_pct ? `${number(h.annualized_volatility_pct, 1)} %` : "—")}
             ${metrica("Max. caida", h.max_drawdown_pct !== undefined ? `${number(h.max_drawdown_pct, 1)} %` : "—")}
+            ${metrica("Sharpe", number(h.sharpe, 2))}
+            ${metrica("Sortino", number(h.sortino, 2))}
+            ${metrica("Calmar", number(h.calmar, 2))}
             ${metrica("RSI 14", number(h.rsi_14, 0))}
             ${metrica("Media 50", number(h.sma_50, 2))}
             ${metrica("Media 200", number(h.sma_200, 2))}
+            ${metrica("ATR 14", number(h.atr_14, 2))}
+            ${metrica("Bollinger %B", bollingerPB(h, c.price))}
+            ${metrica("MACD", number(h.macd, 2))}
           </div>
         </div>
         <div class="caja">
@@ -731,7 +985,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
           <button type="button" role="tab" data-news-tab="company">Empresa</button>
           <button type="button" role="tab" data-news-tab="sector">Sector</button>
         </div>
-        <div id="noticias-lista"><div class="cargando">Cargando noticias…</div></div>
+        <div id="noticias-lista">${esqueleto(4)}</div>
       </div>
 
       <div class="caja">
@@ -776,7 +1030,7 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       const boton = formAsk.querySelector("button[type=submit]");
       boton.disabled = true;
       boton.textContent = "Pensando…";
-      salida.innerHTML = '<div class="cargando">Consultando…</div>';
+      salida.innerHTML = esqueleto(3);
       try {
         const r = await api("app", "ask", {
           ticker,
@@ -880,6 +1134,41 @@ function renderQuarterly(q) {
       q.gaps.map((g) => g.join(" → ")).join("; "))}.</div>`;
   }
   return html + `</div>`;
+}
+
+/** Anillo SVG de la nota 0-10, coloreado por `sentiment`, con el numero en el centro. */
+function anilloSVG(score, sentiment, size = 64) {
+  const v = Math.max(0, Math.min(10, Number(score) || 0));
+  const r = size / 2 - 5, c = 2 * Math.PI * r, activo = c * (v / 10);
+  const color = { verde: "var(--verde)", ambar: "var(--ambar)", rojo: "var(--rojo)" }[sentiment]
+    || "var(--ambar)";
+  return `<svg class="anillo-nota" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
+    role="img" aria-label="Nota ${number(v, 1)} de 10">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--borde)" stroke-width="5"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="5"
+      stroke-linecap="round" stroke-dasharray="${activo.toFixed(2)} ${(c - activo).toFixed(2)}"
+      transform="rotate(-90 ${size / 2} ${size / 2})"/>
+    <text x="${size / 2}" y="${size / 2}" text-anchor="middle" dominant-baseline="central"
+      class="anillo-nota-num" style="font-size:${Math.round(size / 4.2)}px">${number(v, 1)}</text>
+  </svg>`;
+}
+
+/** Sparkline SVG de precios: una linea sin ejes, con los valores en el texto alternativo. */
+function sparklineSVG(puntos, color = "var(--acento)", w = 120, h = 32) {
+  const vals = (puntos || [])
+    .map((p) => (p && typeof p === "object" ? p.close : p))
+    .filter((v) => typeof v === "number" && isFinite(v));
+  if (vals.length < 2) return "";
+  const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+  const step = w / (vals.length - 1);
+  const pts = vals
+    .map((v, i) => `${(i * step).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`)
+    .join(" ");
+  const texto = `${vals.length} cierres, de ${number(min, 2)} a ${number(max, 2)}`;
+  return `<svg class="sparkline" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img"
+    aria-label="Precio del ultimo ano: ${esc(texto)}">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 /** Barras verticales SVG con el valor dentro. Una barra por trimestre, en el mismo orden
@@ -1009,9 +1298,11 @@ function renderReview(s) {
 function renderScore(s, edadSegundos) {
   if (!s) return "";
   const color = s.sentiment || "ambar";
+  const nota = notaMostrada(s);
   let html = `<div class="veredicto veredicto-${color}">`;
   html += `<div class="veredicto-header">
-      <span class="metrica" data-glosario="Nota" style="font-size:22px;font-weight:700;margin-right:10px">${notaMostrada(s)}/10</span>
+      ${anilloSVG(s.final_score ?? s.score, color)}
+      <span class="metrica" data-glosario="Nota" style="font-size:22px;font-weight:700;margin-right:10px">${nota}/10</span>
       <span>${esc(s.label)}</span>
     </div>`;
   html += renderReview(s);
@@ -1021,14 +1312,17 @@ function renderScore(s, edadSegundos) {
   }
   if (s.coverage_warning) html += `<div class="nota">${esc(s.coverage_warning)}</div>`;
 
-  (s.pillars || []).filter((p) => p.subscore !== null).forEach((p) => {
-    const anchoPct = Math.round((p.subscore + 1) * 50); // -1..1 -> 0..100
-    html += `<div class="progreso">
-      <div class="fila"><span class="metrica" data-glosario="${esc(p.name_es)}">${esc(p.name_es)} (${number(p.weight, 0)} %)</span>
-        <b>${number(p.subscore, 2)}</b></div>
-      <div class="barra"><div class="relleno" style="width:${anchoPct}%"></div></div>
-    </div>`;
-  });
+  // Barras por pilar, ordenadas por peso: lo que mas pesa se lee primero.
+  (s.pillars || []).filter((p) => p.subscore !== null)
+    .slice().sort((a, b) => (b.weight || 0) - (a.weight || 0))
+    .forEach((p) => {
+      const anchoPct = Math.round((p.subscore + 1) * 50); // -1..1 -> 0..100
+      html += `<div class="progreso">
+        <div class="fila"><span class="metrica" data-glosario="${esc(p.name_es)}">${esc(p.name_es)} (${number(p.weight, 0)} %)</span>
+          <b>${number(p.subscore, 2)}</b></div>
+        <div class="barra"><div class="relleno" style="width:${anchoPct}%"></div></div>
+      </div>`;
+    });
 
   if (s.pros && s.pros.length) {
     html += `<div class="veredicto-seccion"><div class="veredicto-subtitulo verde">A favor</div><ul>`;
@@ -1102,7 +1396,7 @@ function renderValuation(d, cot) {
  *  y motor de nota que la ficha); las etiquetas de fila reusan claves ya existentes
  *  en glosario.js (PER, EV/EBITDA, Margen neto, ROE, Dividendo, Nota, pilares). */
 async function compararAcciones(tickersText) {
-  loading("tabla-comparar");
+  loading("tabla-comparar", 3);
   const tickers = String(tickersText || "").split(",").map((t) => t.trim()).filter(Boolean);
   try {
     const d = await api("app", "stock_compare", { tickers });
@@ -1225,8 +1519,7 @@ function renderRecPositions() {
 function renderRecIdeas() {
   const cont = document.getElementById("rec-ideas");
   if (!REC_IDEAS.length) {
-    cont.innerHTML = REC_LOADING
-      ? '<div class="cargando">Analizando candidatos…</div>'
+    cont.innerHTML = REC_LOADING ? esqueleto(4)
       : '<div class="vacio">Ninguna idea nueva alcanza nota 7 o mas por ahora.</div>';
     return;
   }
@@ -1341,8 +1634,8 @@ async function loadRecommendations() {
   REC_LOADING = true;
   document.getElementById("rec-listas").style.display = "";
   document.getElementById("rec-visor").style.display = "none";
-  loading("rec-posiciones");
-  loading("rec-ideas");
+  loading("rec-posiciones", 3);
+  loading("rec-ideas", 4);
   const progreso = document.getElementById("rec-progreso");
   progreso.style.display = "none";
 
@@ -1509,6 +1802,7 @@ function renderGemsList() {
       <div style="margin-top:6px"><span class="rec-badge">${esc(g.region || "")}</span>
         ${g.diversifies ? '<span class="rec-badge rec-diversifica">Diversifica</span>' : ""}</div>
       <div class="tenue" style="font-size:13px;margin-top:4px">Capitaliz. ${compact(g.market_cap_eur)}</div>
+      <div data-gem-spark="${esc(g.ticker)}" class="sparkline-caja"></div>
       ${g.main_reason_es ? `<div class="tenue" style="font-size:12px;margin-top:2px">Motivo principal: ${esc(g.main_reason_es)}</div>` : ""}
       <div class="acciones-caja" style="margin-top:8px">
         <button type="button" class="mini" data-gem-watch="${esc(g.ticker)}"
@@ -1535,6 +1829,16 @@ function renderGemsList() {
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
+  // Sparklines en lote y fuera del pintado: una peticion, cacheada 6 h en el servidor.
+  const pendientes = [...cont.querySelectorAll("[data-gem-spark]")].map((el) => el.dataset.gemSpark);
+  if (pendientes.length) {
+    api("app", "sparklines", { tickers: pendientes }).then(({ series }) => {
+      cont.querySelectorAll("[data-gem-spark]").forEach((el) => {
+        const puntos = (series || {})[el.dataset.gemSpark];
+        if (puntos && puntos.length > 1) el.innerHTML = sparklineSVG(puntos, "var(--verde)", 160, 30);
+      });
+    }).catch(() => { /* sin sparkline no se pierde la tarjeta */ });
+  }
 }
 
 function openGemViewer(index) {
@@ -1713,7 +2017,7 @@ function changeView(name) {
   document.querySelectorAll(".vista").forEach((v) =>
     v.classList.toggle("activa", v.id === `vista-${name}`));
 
-  if (name === "cartera") { loadPortfolio(); loadProfile(); loadPendientes(); }
+  if (name === "cartera") { loadPortfolio(); loadProfile(); loadPendientes(); loadEvolucion(); loadAlertas(); }
   if (name === "ayuda") loadHelp();
   if (name === "recomendaciones") loadRecommendations();
   if (name === "gemas") loadGems();
@@ -1728,10 +2032,15 @@ function changeView(name) {
  * Tambien se salta si el mercado relevante esta CLOSED: el precio no va a cambiar
  * hasta la siguiente sesion, asi que reconsultar cada 60s solo gasta peticiones sin
  * aportar nada nuevo en pantalla.
+ *
+ * Las alertas (HU-25) se evaluan en el mismo tick con su propio gate: sin alertas
+ * activas o con todos los mercados cerrados tampoco merece la pena sondear. El gate
+ * se re-abre al volver a la pestana (visibilitychange) o al abrir Cartera.
  */
 function startAutoRefresh() {
   setInterval(() => {
     if (document.hidden) return;
+    evaluarAlertas();
     const view = document.querySelector(".pestana.activa")?.dataset.view;
     if (view === "cartera" && PORTFOLIO_ANY_MARKET_OPEN) {
       loadPortfolio(true);
@@ -1752,10 +2061,44 @@ const HELP_CARD = {
         <li><b>Mi perfil</b> — pondera la nota de cada accion segun tu riesgo, horizonte y preferencia.</li>
         <li><b>Tarjetas</b> — valor de mercado, plusvalia latente, realizado.</li>
         <li><b>Tabla</b> — coste medio, precio, variacion, peso, P&L y Nota.</li>
+        <li><b>Evolucion</b> — curva de valor y plusvalia latente, con Sharpe, Sortino y Calmar frente al indice.</li>
         <li><b>Actualizar precios</b> — boton manual o auto cada 60s si mercado abierto.</li>
         <li><b>Watchlist</b> — seguir tickers sin posicion.</li>
         <li><b>Monedas</b> — compra en EUR, cotiza en USD = conversion automatica.</li>
+        <li><b>Alertas</b> — avisan de un umbral cruzado (precio, media, RSI). Hechos, no consejos.</li>
       </ul>`,
+  },
+  alertas: {
+    titulo: "Alertas",
+    contenido: `<p>Te avisan el dia que se cumple un umbral que tu fijaste. Solo describen hechos.</p>
+      <ul>
+        <li><b>Que se vigila</b> — precio actual, media movil de 50 o 200 sesiones, o RSI de 14 sesiones.</li>
+        <li><b>Direccion</b> — que cruce "sobre" o "bajo" el umbral que escribas.</li>
+        <li><b>Una sola vez</b> — al dispararse avisa y vuelve a armarse cuando la condicion
+          deja de cumplirse, asi que no insiste cada 60s mientras siga cumpliendose.</li>
+        <li><b>Cuando se comprueba</b> — en el refresco de 60s, solo si hay algun mercado
+          abierto; "Comprobar ahora" lo fuerza cuando quieras.</li>
+        <li><b>Nunca aconsejan</b> — "RSI de ITX.MC bajo 30" es un hecho; "momento de comprar
+          ITX.MC" no lo dira jamas: la decision es tuya.</li>
+      </ul>`,
+  },
+  evolucion: {
+    titulo: "Evolucion de la cartera",
+    contenido: `<p>La curva de valor total y de <b>plusvalia latente</b> (valor menos coste),
+      dia a dia, en tu moneda base.</p>
+      <ul>
+        <li><b>Punto en el tiempo</b> — cada fecha usa la posicion que tenias ese dia, con el
+          cierre de ese mismo dia. Nunca la de hoy: mirar atras con datos de manana seria
+          hacer trampa.</li>
+        <li><b>Coste</b> — coste medio de las acciones que tenias ese dia, con comisiones.
+          Las ventas restan al coste al precio medio, igual que en la tabla de Posiciones.</li>
+        <li><b>Sin relleno</b> — un dia sin cotizacion no se inventa: la curva se salta.</li>
+        <li><b>Metricas</b> — rentabilidad anualizada, Sharpe, Sortino, Calmar, volatilidad y
+          caida maxima de esa misma serie, comparadas con el indice en la misma ventana.</li>
+        <li><b>Historial</b> — hasta 5 anos de cierres diarios de los valores en cartera.</li>
+      </ul>
+      <p>Cifras mecanicas sobre datos publicos, no asesoramiento: el pasado no garantiza el
+        futuro.</p>`,
   },
   acciones: {
     titulo: "Acciones",
@@ -1765,7 +2108,7 @@ const HELP_CARD = {
         <li><b>Nota 1-10</b> — sintetiza siete pilares segun tu perfil inversor.</li>
         <li><b>Revision de Claude</b> — si se la pides, suma o resta hasta 2 puntos, con motivo y fuentes y siempre a la vista.</li>
         <li><b>Fundamentales</b> — PER, EV/EBITDA, margen, ROE, dividendo.</li>
-        <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles.</li>
+        <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles, ATR, Bollinger y MACD.</li>
         <li><b>Valoracion</b> — DCF con sensibilidad + Graham.</li>
         <li><b>Resultados trimestrales</b> — los 3 ultimos trimestres, de donde sale el pilar de resultados.</li>
       </ul>`,
@@ -1968,8 +2311,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".pestana").forEach((b) =>
     b.addEventListener("click", () => changeView(b.dataset.view)));
 
-  wireForm("form-operacion", "finance", "trade_create", loadPortfolio);
+  wireForm("form-operacion", "finance", "trade_create", () => { loadPortfolio(); loadEvolucion(); });
   wireForm("form-watchlist", "finance", "watchlist_add", loadWatchlist);
+  wireForm("form-alertas", "finance", "alert_create", loadAlertas);
+  document.getElementById("btn-comprobar-alertas").addEventListener("click", () => evaluarAlertas(true));
 
   document.getElementById("form-perfil").addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -2028,6 +2373,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("estado").textContent = `datos locales · ${CURRENCY}`;
+  aplicarTema(temaActual());
+  document.getElementById("btn-tema").addEventListener("click", () => {
+    aplicarTema(temaActual() === "claro" ? "oscuro" : "claro");
+  });
   changeView("acciones");
+  // Las alertas se evaluan aunque no se abra Cartera: estan para que no tengas
+  // que vigilarlas tu. Solo se pintan dentro de su caja.
+  loadAlertas();
+  // Mercado cerrado apago el bucle de alertas; al volver a la pestana se re-abre,
+  // que es cuando vuelve a merecer la pena comprobarlo.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) ALERTAS_ANY_MARKET_OPEN = true;
+  });
   startAutoRefresh();
 });

@@ -3,9 +3,11 @@
 Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accion",
 "Backlog adicional" y al A6 suelto de `CLAUDE.md`/`AGENTS.md`, que ahora solo enlazan
 aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
-HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-11, HU-12, HU-13, HU-14, HU-17, HU-18,
-HU-20, HU-21, HU-28, HU-30, HU-31, HU-32, HU-33 y HU-34. Epicas 1, 2 y 3 cerradas; la 4
-(Hidden Gems) cerrada entera.
+HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-11, HU-12, HU-13, HU-14, HU-15, HU-16,
+HU-17, HU-18, HU-19, HU-20, HU-21, HU-23, HU-24, HU-25, HU-26, HU-28, HU-29, HU-30, HU-31,
+HU-32, HU-33 y HU-34. Epicas 1, 2, 3, 4 y 5 cerradas. Quedan dos: **HU-22** (medir el
+retraso real de la fuente, necesita sesion regular de un dia laborable) y **HU-27**
+(ejecucion via broker, L, **requiere decision explicita** y contradice § Principios).
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -559,7 +561,6 @@ Criterios de aceptacion:
 - [x] Aviso visible: "Seleccion mecanica sobre datos publicos, no es asesoramiento."
 - [x] Ayuda: seccion nueva "Hidden Gems" con la regla de HU-13 en lenguaje llano.
 - [x] Test en `prueba_web.py`: endpoints de gemas responden y exigen el token.
-- [ ] Test en `prueba_web.py`: endpoints de gemas responden y exigen el token.
 
 ---
 
@@ -569,31 +570,65 @@ Metodo: antes de tocar nada, auditoria con la skill `better-interface` (accesibi
 layout, tipografia, color, copy, pulido) sobre las 6 pestanas; sus hallazgos se anaden
 como criterios a estas HU. Verificacion visual con capturas antes/despues.
 
-### [ ] HU-15 — Sistema de diseno y modo oscuro (M)
+### [x] HU-15 — Sistema de diseno y modo oscuro (M)
 
 **Como** usuario, **quiero** una interfaz coherente y moderna, con modo oscuro,
-**para** que dé gusto usarla a cualquier hora.
+**para** que de gusto usarla a cualquier hora.
 
 Criterios de aceptacion:
-- [ ] `estilo.css` usa variables CSS para color, espaciado, radios, sombras y tipografia;
+- [x] `estilo.css` usa variables CSS para color, espaciado, radios, sombras y tipografia;
       cero colores sueltos fuera de las variables.
-- [ ] Escala tipografica definida (5-6 tamanos) y cifras tabulares en importes y notas.
-- [ ] Modo oscuro: sigue `prefers-color-scheme` y tiene interruptor en la cabecera que
+- [x] Escala tipografica definida (5-6 tamanos) y cifras tabulares en importes y notas.
+- [x] Modo oscuro: sigue `prefers-color-scheme` y tiene interruptor en la cabecera que
       persiste en `localStorage`.
-- [ ] Contraste AA (>= 4,5:1 texto, >= 3:1 elementos graficos) en ambos temas, incluidos
+- [x] Contraste AA (>= 4,5:1 texto, >= 3:1 elementos graficos) en ambos temas, incluidos
       `.veredicto-verde/ambar/rojo` (se mantienen esos nombres de clase).
-- [ ] `prefers-reduced-motion` desactiva transiciones y animaciones.
+- [x] `prefers-reduced-motion` desactiva transiciones y animaciones.
 
-### [ ] HU-16 — Visualizacion de la nota y del precio (M)
+Estado: hecho. La paleta vivia ya en variables; se han anadido `--sobre-acento` (el texto
+que va sobre el acento: `#fff` suelto sobre `--acento` solo daba 2,75:1 en tema oscuro) y
+cinco `--sombra-*` que sustituyen a los `rgba(0,0,0,...)` sueltos. Escala tipografica de 6
+tokens (`--t-2xs` 10, `--t-xs` 12, `--t-s` 13, `--t-base` 15, `--t-l` 18, `--t-2xl` 28): los
+11 tamanos px que habia se han mapeado al token mas cercano, sin px sueltos.
+`font-variant-numeric: tabular-nums` en importes, notas y el anillo.
+
+Tema: `<html data-tema="claro|oscuro">`. Un script inline en el `<head>` resuelve el valor
+antes del primer pintado (sigue `prefers-color-scheme` cuando no has elegido) y evita el
+parpadeo; el interruptor de la cabecera conmuta y persiste en `localStorage`
+(`sealock-tema`). Por eso los dos bloques de variables se escriben una sola vez cada uno:
+`:root, :root[data-tema="oscuro"]` y `:root[data-tema="claro"]`, sin duplicar la paleta.
+
+Contraste medido con la formula WCAG, no a ojo. En oscuro todo pasa AA-texto (>=4,5:1). En
+claro **no pasaba** y se ha corregido: `ambar` #b47500 daba 3,38:1 sobre `fondo-alt` (ahora
+`#8a5a00`, 5,23:1), `verde` #12875a daba 4,00:1 (ahora `#0f7a52`, 4,72:1), `rojo` #d13438
+4,35:1 (ahora `#c22b30`, 5,03:1), `texto-tenue` #64748b 4,20:1 (ahora `#5c6b80`, 4,79:1) y
+`acento` #1f6feb 4,09:1 (ahora `#1a5fd0`, 5,16:1). El minimo real de cada tema queda en la
+tabla de la seccion de Ayuda si se quiere volver a comprobar. Seis checks en
+`prueba_web.py`, incluido uno que falla si vuelve a haber un hex o un rgba fuera de las
+variables.
+
+### [x] HU-16 — Visualizacion de la nota y del precio (M)
 
 **Como** inversor, **quiero** ver la nota y sus pilares de un vistazo, **para** entender
 la calificacion sin leer tablas.
 
 Criterios de aceptacion:
-- [ ] Nota como anillo SVG (0-10) coloreado por `sentiment`, con el numero en el centro.
-- [ ] Barras horizontales por pilar (subnota y peso), ordenadas por peso.
-- [ ] Sparkline de precio a 1 ano en la ficha y en las tarjetas de gemas.
-- [ ] Todo SVG inline, sin librerias; cada grafico tiene texto alternativo con los valores.
+- [x] Nota como anillo SVG (0-10) coloreado por `sentiment`, con el numero en el centro.
+- [x] Barras horizontales por pilar (subnota y peso), ordenadas por peso.
+- [x] Sparkline de precio a 1 ano en la ficha y en las tarjetas de gemas.
+- [x] Todo SVG inline, sin librerias; cada grafico tiene texto alternativo con los valores.
+
+Estado: hecho. `anilloSVG(score, sentiment)` y `sparklineSVG(puntos)` en `app.js`, SVG
+inline con `role="img"` y `aria-label` con los valores (mismo patron que `barrasSVG`, que
+ya lo tenia). El anillo va en la cabecera del veredicto; las barras de pilar ahora se
+ordenan por peso descendente antes de pintarse. El sparkline de la ficha sale de
+`historical.closes` (misma llamada de siempre: `historical()` ahora recibe
+`include_series=True` en `_fetch_raw`, sin peticion extra). En las tarjetas de gemas va por
+el endpoint por lotes `app/sparklines(tickers)`, una sola peticion y cacheada 6 h en
+`_series_cache`; si falla, la tarjeta se pinta igual sin sparkline. Como las metricas de
+HU-24 ya se calculaban y no se veian, la caja "Comportamiento (1 ano)" muestra ahora
+Sharpe/Sortino/Calmar, con sus tres entradas nuevas de glosario (el test B4 exige su
+equivalencia). Seis checks en `prueba_web.py`.
 
 ### [x] HU-17 — Movil (S) — antes D3a
 - [x] Pestanas con scroll horizontal; ningun formulario ni tabla desborda a 360 px de ancho.
@@ -614,8 +649,19 @@ Estado: hecho. La regla generica `button:focus-visible, [tabindex]:focus-visible
 `button:disabled { opacity:.5; cursor:not-allowed }`. El popover de glosario y la
 tarjeta de ayuda ya cerraban con ESC (comprobado, sin cambios).
 
-### [ ] HU-19 — Esqueletos de carga (S) — antes D3c
-- [ ] Toda caja que hoy dice "Cargando..." muestra un esqueleto con la forma del contenido.
+### [x] HU-19 — Esqueletos de carga (S) — antes D3c
+- [x] Toda caja que hoy dice "Cargando..." muestra un esqueleto con la forma del contenido.
+
+Estado: hecho. Helper `esqueleto(filas)` en `app.js` + clase `.esqueleto` en `estilo.css`
+(barras con anchos que repiten la forma del bloque, shimmer y `prefers-reduced-motion`).
+`loading(id, filas)` pinta el esqueleto; las cajas lo llaman con su numero de filas
+(cartera 4, busqueda 3, comparar 3, posiciones 3, ideas 4) y las sueltas (ficha 6,
+noticias 4, respuesta de la caja de preguntar 3) usan `esqueleto()` directo. La clase
+`.cargando` era ya codigo muerto y se ha borrado. Quedan dos `Cargando…` de proposito:
+`rec-perfil` y `gemas-estado` son lineas de estado (`<p class="ayuda">`), no cajas de
+contenido: un esqueleto de una barra no dice mas que la palabra. Tres checks en
+`prueba_web.py` (helper presente y usado, sin placeholder `class="cargando"`, estilo +
+`prefers-reduced-motion`).
 
 ### [x] HU-20 — Reintentar en errores (S) — antes D3d
 - [x] Todo estado de error tiene boton "Reintentar" que repite solo esa carga.
@@ -647,29 +693,119 @@ Detalle tecnico de E2-E6 en `docs/investigacion-repos.md`.
 - [ ] Medido en sesion REGULAR (lunes) para un valor EE. UU. y uno de Madrid.
 - [ ] `data_delay_min` coincide con lo medido o se corrige; resultado anotado en `CLAUDE.md`.
 
-### [ ] HU-23 — Indicadores tecnicos (M) — antes E2
+### [x] HU-23 — Indicadores tecnicos (M) — antes E2
 **Como** inversor, **quiero** ATR, Bollinger y MACD, **para** que el momentum sea mas fino.
-- [ ] `mcp/indicators.py` vendorizado de talipp con licencia y `FUENTE.md`.
-- [ ] RSI/SMA de `historical()` sustituidos **tras verificar equivalencia** (Wilder vs media simple).
-- [ ] ATR/Bollinger/MACD en `historical()` y como metricas del pilar Momentum.
-- [ ] Entradas de glosario (el test B4 falla sin ellas).
+- [x] `mcp/indicators.py` vendorizado de talipp con licencia y `FUENTE.md`.
+- [x] RSI/SMA de `historical()` sustituidos **tras verificar equivalencia** (Wilder vs media simple).
+- [x] ATR/Bollinger/MACD en `historical()` y como metricas del pilar Momentum.
+- [x] Entradas de glosario (el test B4 falla sin ellas).
 
-### [ ] HU-24 — Metricas de cartera (M) — antes E3
+Estado: hecho. `mcp/indicators.py` lleva `SMA`, `EMA`, `RSI`, `ATR`, `StdDev`, `BB` y
+`MACD` con la semantica incremental de talipp (primera salida `None` hasta tener datos,
+semillas y suavizado incluidos), stdlib y sin I/O; `mcp/LICENSE.talipp` (MIT) y
+`mcp/FUENTE.md` dejan repo, version (`2.7.0`, commit `3ec88b4`, 2025-09-09), que se tomo
+y que se dejo fuera (el framework generico con sampling, la fabrica `MAType`, ~90
+indicadores y los paquetes `talipp.*`).
+
+**Verificacion de equivalencia antes de borrar lo escrito a mano**: `mcp/indicators.py`
+se comparo contra **talipp 2.7.0 real** (instalada aparte, no como dependencia) sobre dos
+series de 300 valores: identicos los siete indicadores a 1e-9. Queda replicable con
+`pruebas/compara_talipp.py` y fijado en `prueba_humo.py` con valores golden de la propia
+talipp sobre una serie determinista (enteros, sin `math`, sale igual en cualquier
+plataforma):
+
+- **SMA**: sigue valiendo exactamente lo mismo que `sum(closes[-n:]) / n` a 4 decimales.
+- **RSI**: **si cambio, a proposito**. La version anterior promediaba los ultimos 14
+  retornos (media simple); ahora es el suavizado de Wilder, el RSI canonico (en la serie
+  del test: 49.0 frente a 47.9). El pilar Momentum sigue leyendo `rsi_14` con los mismos
+  umbrales 30/70, asi que solo se mueven las notas que estaban en la frontera.
+
+`historical()` devuelve ademas `atr_14`, `bollinger_upper`, `bollinger_lower`, `macd` y
+`macd_signal` (parametros 14, 20x2 y 12/26/9), calculados sobre los mismos cierres y, para
+el ATR, sobre las velas de la misma respuesta de Yahoo (`high`/`low`); un cierre nulo se
+salta y no arrastra el resto.
+
+En `scoring._momentum()` los tres entran como metricas mas del pilar, todas opcionales
+(sin dato se saltan, no puntuan 0): MACD `+1/-1` por su cruce, `%B` fuera de las bandas
+`+-0.5` con la misma lectura que el RSI (dentro de la banda = 0, como el RSI en 30-70) y
+ATR **solo** cuando supera el 10% del precio, con `-0.5`: el ATR no tiene direccion, no
+compra puntos, un ATR normal no entra en la media. La ficha pinta las tres cifras
+(`ATR 14`, `Bollinger %B`, `MACD`) con sus entradas de glosario.
+
+### [x] HU-24 — Metricas de cartera (M) — antes E3
 **Como** inversor, **quiero** Sharpe, Sortino, Calmar y comparacion con `^IBEX`, **para**
 medir mi cartera con estandares del sector.
-- [ ] Formulas portadas de quantstats a stdlib, con tests contra valores conocidos.
-- [ ] Tasa libre de riesgo en `SEALOCK_RISK_FREE_RATE`, nunca constante escondida.
+- [x] Formulas portadas de quantstats a stdlib, con tests contra valores conocidos.
+- [x] Tasa libre de riesgo en `SEALOCK_RISK_FREE_RATE`, nunca constante escondida.
 
-### [ ] HU-25 — Alertas (M) — antes E4, absorbe "Alertas precio"
+Estado: hecho. `mcp/metrics.py` (puro, sin red ni I/O): `annualized_return`,
+`annualized_volatility`, `max_drawdown`, `sharpe`, `sortino`, `calmar` y `summary`, que
+devuelve la `risk_free_rate` usada al lado del resultado. La tasa sale de
+`SEALOCK_RISK_FREE_RATE` (anual, decimal, por defecto 0) y se puede pasar por llamada.
+Nueve checks con valores conocidos en `prueba_humo.py` (p. ej. `sharpe([0.10, 0.00])` a 2
+periodos/ano = 1.0, `calmar` sobre `[-0.10, +0.05, -0.50]` = -1.0) y tres casos degenerados
+que devuelven `None` en vez de un numero inventado: sin volatilidad el Sharpe no puede ser
+1e16 por ruido de coma flotante (hay un epsilon a proposito).
+
+Dos consumidores: `historical()` anade `sharpe`/`sortino`/`calmar`/`risk_free_rate` al lado
+de la volatilidad y el drawdown que ya devolvia, y `app/portfolio_metrics` (endpoint nuevo)
+compone la cartera contra `^IBEX`. La serie de valor es `value_series()` (pura, en
+`servidor.py`): punto-en-el-tiempo segun HU-26, con `_rate_at()` para que un tipo de cambio
+posterior no contamine el valor de hoy. `not_converted` sigue la misma regla que
+`portfolio_valued`: una divisa que no se puede convertir se excluye y se reporta, nunca se
+suma como si fuera igual. Cache de series diarias 6 h (`_series_cache`), que es donde vive
+el coste de red.
+
+Queda fuera a proposito: la UI de estas metricas va con el grafico de HU-29, que es quien
+pinta esa misma serie (ya se muestran en la ficha); metricas que exigen mas historia (VaR,
+informes quantstats) siguen sin hacerse.
+
+**Hallazgo durante la implementacion**: Yahoo **muestrea** las series largas. Con
+`range=max` devuelve ~12 puntos para 2,5 anos (trimestrales), pese a pedir `interval=1d`.
+Anualizar eso con 252 periodos/ano — que era lo que habia — daba un Sharpe de 77.000. La
+raiz no estaba en las formulas sino en el factor de anualizacion: ahora sale de las fechas
+(`metrics.periods_per_year_from_dates`, puro y testeado) en vez de un 252 supuesto, y
+`_closes` pide `5y`, que si viene diario. Cinco checks nuevos, incluida la regresion.
+
+### [x] HU-25 — Alertas (M) — antes E4, absorbe "Alertas precio"
 **Como** inversor, **quiero** alertas sobre precio y senales, **para** no vigilar a mano.
-- [ ] Tabla `alerts` y tools `alert_create`/`alerts_list`/`alert_delete`/`alert_toggle`.
-- [ ] Evaluacion en el refresco de 60 s; aviso en la UI.
-- [ ] Describe hechos ("RSI de ITX.MC bajo 30"), nunca recomienda (§ Limites).
+- [x] Tabla `alerts` y tools `alert_create`/`alerts_list`/`alert_delete`/`alert_toggle`.
+- [x] Evaluacion en el refresco de 60 s; aviso en la UI.
+- [x] Describe hechos ("RSI de ITX.MC bajo 30"), nunca recomienda (§ Limites).
 
-### [ ] HU-26 — Convencion de punto en el tiempo (S) — antes E5
-- [ ] Convencion documentada antes de cualquier backtest: se ve el cierre de T, se compra
+Estado: hecho. La tabla `alerts` y las cuatro tools viven en `finanzas_server.py`, que no
+tiene red; comparar es `evaluate_alerts()`, **puro**: le das los alerts y las lecturas
+(`{ticker: {metrica: valor}}`) y devuelve `fired`/`updates`/`unavailable`. Escribir esos
+estados es `alerts_apply()`, que solo llama el servidor web — el unico que tiene las
+lecturas. Metricas: `price`, `sma_50`, `sma_200`, `rsi_14`; operadores `above`/`below`.
+Tope de 50 alertas (`MAX_ALERTS`) porque la UI las reevalua cada 60 s.
+
+**Disparo por flanco, no por nivel**: una alerta avisa cuando su condicion *se vuelve* cierta
+mientras esta armada, y se rearma sola en cuanto la condicion es falsa otra vez. Una
+condicion que sigue siendo verdadera avisa una vez, no en cada refresco. Sin lectura de una
+metrica va a `unavailable` y no se inventa el numero: sin dato, sin veredicto.
+
+La frase la compone `alert_text()` con la etiqueta de la metrica, el ticker y el operador
+("RSI de ITX.MC bajo 30"): hechos, ningun verbo que aconseje (§ Limites). En la UI,
+`evaluarAlertas()` se llama en el refresco de 60 s (`startAutoRefresh`), con dos cortes para
+no gastar red: sin alertas activas no se llama, y una alerta de precio con el mercado cerrado
+no se reevalua. Lo disparado vive en memoria (`ALERTAS_DISPARADAS`), nunca se guarda, y se
+descarta con un boton.
+
+### [x] HU-26 — Convencion de punto en el tiempo (S) — antes E5
+- [x] Convencion documentada antes de cualquier backtest: se ve el cierre de T, se compra
       en T+1, se vende en T+2, retorno = `T+2/T+1 - 1`.
-- [ ] `period_return_pct` y plusvalias auditadas con esa convencion.
+- [x] `period_return_pct` y plusvalias auditadas con esa convencion.
+
+Estado: hecho. La convencion vive en `AGENTS.md`/`CLAUDE.md` § "Convencion de punto en el
+tiempo". Auditoria: **sin look-ahead hoy**. `historical().period_return_pct` es trailing
+(`closes[-1]/closes[0]-1` sobre la ventana pedida, `date_to` es el ultimo cierre) y las
+plusvalias de `portfolio_view` se calculan por `date, id` con coste medio construido solo
+con compras anteriores. Dos checks en `prueba_humo.py` lo fijan: (1) `2@100`, venta de
+`1@300` y luego `2@400` da `realized_gain = 200` (y no 0, que es lo que saldria mezclando
+la compra posterior); (2) `period_return_pct` cuadra con `end/start - 1` de su propia
+ventana. Consecuencia anadida para HU-24 y HU-29: toda metrica o curva se calcula con la
+posicion tal como estaba en esa fecha.
 
 ### [ ] HU-27 — Ejecucion via broker (L) — antes E6, **REQUIERE DECISION PREVIA**
 - [ ] Decision explicita del usuario (contradice § Limites y § Principios).
@@ -684,10 +820,42 @@ tener copia fuera de SeaLock.
       el CSV lleva una columna `tabla` para distinguir las tres. Nada sale a la red.
 - [x] Test en `prueba_web.py`: `export_all` responde con las 3 claves y exige el token.
 
-### [ ] HU-29 — Grafico de evolucion de la cartera (M)
+### [x] HU-29 — Grafico de evolucion de la cartera (M)
 **Como** inversor, **quiero** ver la evolucion del valor total y la plusvalia, **para** ver
 mi progreso.
-- [ ] Linea temporal SVG con valor total en moneda base y plusvalia; respeta HU-26.
+- [x] Linea temporal SVG con valor total en moneda base y plusvalia; respeta HU-26.
+
+Estado: hecho. `portfolio_history()` (pura, en `app/servidor.py`) es la fuente unica de la
+serie: en cada fecha devuelve **valor** (las acciones ya compradas a ese cierre) y **coste**
+(el coste medio de esas mismas acciones, con comisiones, y con la venta restando al precio
+medio, igual que `portfolio_view`), ambos convertidos con el tipo de cambio de ese dia. En
+lugar de sumar `value * cost`, **`value_series()` ahora delega en ella** (`[(d, v) for d, v,
+_ in ...]`), asi metricas (HU-24) y grafica leen el mismo sitio y no puede haber dos
+versiones de la verdad.
+
+`app/portfolio_metrics` anade `series`: `[{date, value, cost, gain}]`, un punto por fecha
+con precio (hasta 5 anos de cierres diarios, cache 6 h en `_series_cache`). La caja
+"Evolucion de la cartera" (entre las tarjetas y Posiciones) la pinta con `evolucionSVG()`:
+dos paneles SVG que comparten eje temporal — arriba el valor, abajo la plusvalia latente con
+su linea de cero (así un valor negativo no se aplasta contra el eje) —, `role="img"` y el
+`aria-label` con las cifras, leyenda y colores por signo. Debajo, las metricas de la misma
+serie (rentabilidad anualizada, Sharpe, Sortino, Calmar, volatilidad y caida maxima) frente
+a `^IBEX` en la misma ventana, con la tasa libre de riesgo usada a la vista.
+
+Criterios de aceptacion:
+- [x] Tests puros en `prueba_humo.py`: coste con comision, venta al precio medio, plusvalia
+      = valor - coste fecha a fecha, el lado de valor intacto respecto a `value_series`, y
+      el coste convertido con el tipo del dia (nunca uno posterior).
+- [x] Tests en `prueba_web.py`: `series` con `date/value/cost/gain` y sin ninguna fecha
+      posterior a hoy; caja, SVG accesible y linea de cero presentes; colores via variables.
+- [x] Nueva entrada de glosario "Rentabilidad anualizada" (el test B4 la exige).
+- [x] Ayuda: seccion "Evolucion de la cartera" con la regla de punto en el tiempo en
+      lenguaje llano, y su bullet en la card "Cartera".
+- [x] Nada del usuario sale: la serie se arma en el servidor con datos locales.
+
+De paso: los avisos de Cartera (sin precio, moneda mal anotada) se acumulaban en cada
+refresco de 60 s, porque se insertaban con `insertAdjacentHTML` y nadie los borraba. Ahora
+viven en `#avisos-cartera` y se sobrescriben.
 
 ### [x] HU-31 — Broker por operacion y pendientes de subir (S)
 **Como** inversor, **quiero** anotar en que broker he hecho cada operacion y ver lo que me

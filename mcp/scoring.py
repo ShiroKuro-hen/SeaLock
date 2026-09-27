@@ -240,6 +240,35 @@ def _momentum(h, price):
         s = -0.5 if rsi > 70 else (0.5 if rsi < 30 else 0.0)
         pairs.append((s, 1.0)); details.append(_detail("rsi_14", "RSI", rsi, s))
 
+    # HU-23: ATR, Bollinger and MACD ride in the same pillar. Every metric is
+    # optional: a missing value is skipped (the pillar renormalises), never read
+    # as a neutral zero, so a ticker Yahoo does not cover is not scored down.
+    macd, signal = h.get("macd"), h.get("macd_signal")
+    if macd is not None and signal is not None:
+        s = 1.0 if macd > signal else -1.0
+        pairs.append((s, 1.0)); details.append(_detail("macd", "MACD", macd, s, fmt="{:.2f}"))
+
+    upper, lower = h.get("bollinger_upper"), h.get("bollinger_lower")
+    if p and upper and lower and upper > lower:
+        # %B: where the price sits inside the bands. Above the upper band the
+        # move is extended, below the lower one it is washed out — the same
+        # read the RSI gets above 70 / below 30.
+        pct_b = 100.0 * (p - lower) / (upper - lower)
+        s = -0.5 if pct_b > 100 else (0.5 if pct_b < 0 else 0.0)
+        pairs.append((s, 1.0)); details.append(_detail("bollinger_pct_b", "Bollinger %B", pct_b, s, " %"))
+
+    atr = h.get("atr_14")
+    if atr is not None and p:
+        # ATR carries no direction, so it never buys a better score: it only
+        # speaks up when noise is extreme enough to drown the signal (>10% of
+        # price) and then it only penalises. A calm ATR says nothing, so it
+        # does not enter the average either (unlike Bollinger/RSI, which read
+        # neutral as 0 on purpose).
+        atr_pct = 100.0 * atr / p
+        if atr_pct > 10:
+            pairs.append((-0.5, 1.0))
+            details.append(_detail("atr_pct", "ATR", atr_pct, -0.5, " %"))
+
     return _combine(pairs), details
 
 

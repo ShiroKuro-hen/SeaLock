@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS score_cache (
 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_score_reviews_ticker ON score_reviews(ticker);
 CREATE INDEX IF NOT EXISTS idx_score_cache_region ON score_cache(region);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    armed INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_triggered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_ticker ON alerts(ticker);
 """
 
 
@@ -654,6 +668,190 @@ def review_delete(id, confirm=False):
             return {"ok": False, "needs_confirmation": True, "review": _review_row(row)}
         cx.execute("DELETE FROM score_reviews WHERE id=?", (int(id),))
     return {"ok": True, "deleted": _review_row(row)}
+
+
+# -------------------------------------------------------------------- alerts
+#
+# HU-25. An alert is a reading the user wants to be told about, never an opinion:
+# "RSI de ITX.MC bajo 30" describes a fact, "momento de comprar ITX.MC" would be
+# advice and never appears (see AGENTS.md > Limites). The table is user data, so
+# it lives in this server (no network); the readings come from app/servidor.py,
+# which does have network access and is the only caller of evaluate_alerts().
+
+# Metrics an alert can watch, with the Spanish label the UI sentence uses. Kept
+# in Python and not as a table CHECK: adding a metric later must not need a
+# table rebuild, and alert_create() validates against this list anyway.
+ALERT_METRICS = {
+    "price": "Precio",
+    "sma_50": "SMA 50",
+    "sma_200": "SMA 200",
+    "rsi_14": "RSI",
+}
+ALERT_OPERATORS = {"above": "sobre", "below": "bajo"}
+MAX_ALERTS = 50  # the UI re-evaluates every 60s: a cap keeps that loop honest
+
+
+def _alert_row(row):
+    alert = dict(row)
+    alert["active"] = bool(alert["active"])
+    alert["armed"] = bool(alert["armed"])
+    # The sentence travels with the row: one source for it (here), so the UI and
+    # the tests cannot drift apart from what alert_create() stores.
+    alert["text"] = alert_text(alert)
+    return alert
+
+
+def _fmt_threshold(value):
+    """30, not 30.0: thresholds are typed by the user and read back verbatim."""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def alert_text(alert):
+    """The sentence shown when an alert fires. Facts only, no verb that advises."""
+    label = ALERT_METRICS.get(alert["metric"], alert["metric"])
+    operator = ALERT_OPERATORS.get(alert["operator"], alert["operator"])
+    return f"{label} de {alert['ticker']} {operator} {_fmt_threshold(alert['threshold'])}"
+
+
+@srv.tool(
+    "alert_create",
+    "Create an alert that tells you when a metric of a ticker crosses a threshold. "
+    "Alerts describe facts (a price, a moving average, the RSI), never advice.",
+    {
+        "ticker": {"type": "string"},
+        "metric": {"type": "string", "enum": sorted(ALERT_METRICS),
+                   "description": "price, sma_50, sma_200 or rsi_14"},
+        "operator": {"type": "string", "enum": sorted(ALERT_OPERATORS)},
+        "threshold": {"type": "number"},
+    },
+    required=["ticker", "metric", "operator", "threshold"],
+)
+def alert_create(ticker, metric, operator, threshold):
+    ticker = (ticker or "").upper().strip()
+    if not ticker:
+        raise ValueError("ticker must not be empty")
+    if metric not in ALERT_METRICS:
+        raise ValueError(f"metric must be one of {', '.join(sorted(ALERT_METRICS))}")
+    if operator not in ALERT_OPERATORS:
+        raise ValueError(f"operator must be one of {', '.join(sorted(ALERT_OPERATORS))}")
+    try:
+        thr = float(threshold)
+    except (TypeError, ValueError):
+        raise ValueError("threshold must be a number")
+    if metric == "rsi_14" and not 0 <= thr <= 100:
+        raise ValueError("the RSI goes from 0 to 100")
+    if metric != "rsi_14" and thr <= 0:
+        raise ValueError("threshold must be greater than 0")
+    with db() as cx:
+        total = cx.execute("SELECT COUNT(*) n FROM alerts").fetchone()["n"]
+        if total >= MAX_ALERTS:
+            raise ValueError(f"at most {MAX_ALERTS} alerts")
+        cx.execute(
+            """INSERT INTO alerts (ticker, metric, operator, threshold, active, armed, created_at)
+               VALUES (?,?,?,?,1,1,?)""",
+            (ticker, metric, operator, thr, _now()),
+        )
+        row = cx.execute("SELECT * FROM alerts WHERE id = last_insert_rowid()").fetchone()
+    return {"ok": True, "alert": _alert_row(row)}
+
+
+@srv.tool("alerts_list", "List your alerts with their state and last trigger.", {})
+def alerts_list():
+    with db() as cx:
+        data = rows(cx.execute("SELECT * FROM alerts ORDER BY ticker, id"))
+    return {"alerts": [_alert_row(r) for r in data]}
+
+
+@srv.tool(
+    "alert_toggle",
+    "Pause or resume an alert. Resuming re-arms it, so it can fire again right "
+    "away if its condition is already true.",
+    {"id": {"type": "integer"}, "active": {"type": "boolean"}},
+    required=["id"],
+)
+def alert_toggle(id, active=None):
+    with db() as cx:
+        row = cx.execute("SELECT * FROM alerts WHERE id=?", (int(id),)).fetchone()
+        if row is None:
+            return {"ok": False, "error": f"No alerta con id {id}"}
+        new_active = (not row["active"]) if active is None else bool(active)
+        cx.execute("UPDATE alerts SET active=?, armed=1 WHERE id=?",
+                   (1 if new_active else 0, int(id)))
+        row = cx.execute("SELECT * FROM alerts WHERE id=?", (int(id),)).fetchone()
+    return {"ok": True, "alert": _alert_row(row)}
+
+
+@srv.tool(
+    "alert_delete",
+    "Delete an alert by id. Without confirm it only returns the record, so it can "
+    "be shown before anything is removed.",
+    {"id": {"type": "integer"}, "confirm": {"type": "boolean", "default": False}},
+    required=["id"],
+)
+def alert_delete(id, confirm=False):
+    with db() as cx:
+        row = cx.execute("SELECT * FROM alerts WHERE id=?", (int(id),)).fetchone()
+        if row is None:
+            return {"ok": False, "error": f"No alerta con id {id}"}
+        if not confirm:
+            return {"ok": False, "needs_confirmation": True, "alert": _alert_row(row)}
+        cx.execute("DELETE FROM alerts WHERE id=?", (int(id),))
+    return {"ok": True, "deleted": _alert_row(row)}
+
+
+def evaluate_alerts(alerts, readings, now=None):
+    """Pure comparison of alerts against the latest readings (HU-25).
+
+    `readings` is {ticker: {metric: value}}. A metric with no reading is
+    reported as unavailable and never guessed: no number, no verdict.
+
+    Edge-triggered on purpose: an alert fires only when its condition turns true
+    while it is armed, and re-arms as soon as the condition is false again. A
+    condition that stays true therefore notifies once instead of on every 60s
+    refresh. Returns {"fired", "updates", "unavailable"}; the caller persists
+    `updates` (this function has no clock of its own beyond `now` and no I/O).
+    """
+    now = now or _now()
+    fired, updates, unavailable = [], [], []
+    for alert in alerts or []:
+        if not alert.get("active"):
+            continue
+        value = (readings.get(alert["ticker"]) or {}).get(alert["metric"])
+        if value is None:
+            unavailable.append({"id": alert["id"], "ticker": alert["ticker"],
+                                "metric": alert["metric"]})
+            continue
+        if alert["operator"] == "above":
+            met = value > alert["threshold"]
+        else:
+            met = value < alert["threshold"]
+        if met and alert.get("armed", 1):
+            fired.append({"id": alert["id"], "ticker": alert["ticker"],
+                          "metric": alert["metric"], "threshold": alert["threshold"],
+                          "value": value, "text": alert_text(alert)})
+            updates.append({"id": alert["id"], "armed": 0, "last_triggered_at": now})
+        elif not met and not alert.get("armed", 1):
+            # Condition gone: re-arm silently, keeping the last trigger time.
+            updates.append({"id": alert["id"], "armed": 1,
+                            "last_triggered_at": alert.get("last_triggered_at")})
+    return {"fired": fired, "updates": updates, "unavailable": unavailable}
+
+
+def alerts_apply(updates):
+    """Persist what evaluate_alerts() decided. Plain function, not a tool: only
+    the web server (which fetched the readings) writes these states."""
+    if not updates:
+        return 0
+    with db() as cx:
+        for u in updates:
+            if u.get("last_triggered_at"):
+                cx.execute("UPDATE alerts SET armed=?, last_triggered_at=? WHERE id=?",
+                           (int(u["armed"]), u["last_triggered_at"], int(u["id"])))
+            else:
+                cx.execute("UPDATE alerts SET armed=? WHERE id=?",
+                           (int(u["armed"]), int(u["id"])))
+    return len(updates)
 
 
 # ----------------------------------------------------------------- hidden gems

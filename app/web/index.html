@@ -6,6 +6,19 @@
 <title>SeaLock</title>
 <link rel="stylesheet" href="/estilo.css">
 <script>window.SEALOCK = { token: "{{TOKEN}}", currency: "{{CURRENCY}}" };</script>
+<script>
+// Tema antes del primer pintado: sin parpadeo claro->oscuro. El sistema manda si no
+// has elegido; lo elegido persiste y lo lee la UI (HU-15).
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("sealock-tema"); } catch (e) { /* modo privado */ }
+  if (t !== "claro" && t !== "oscuro") {
+    t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "claro" : "oscuro";
+  }
+  document.documentElement.dataset.tema = t;
+})();
+</script>
 </head>
 <body>
 
@@ -19,6 +32,8 @@
     <button class="pestana" data-view="ayuda">Ayuda</button>
   </nav>
   <div class="estado" id="estado"></div>
+  <button type="button" id="btn-tema" class="mini" title="Cambiar entre tema claro y oscuro"
+    aria-label="Cambiar entre tema claro y oscuro">Tema</button>
 </header>
 
 <main>
@@ -55,6 +70,15 @@
   </div>
 
   <div class="tarjetas" id="tarjetas-cartera"></div>
+  <div id="avisos-cartera"></div>
+
+  <div class="caja">
+    <div class="cabecera-caja">
+      <h2>Evolucion de la cartera</h2>
+      <a class="btn-ayuda" href="#" data-section="evolucion" title="Mas informacion">?</a>
+    </div>
+    <div id="evolucion-cartera"></div>
+  </div>
 
   <div class="caja">
     <div class="cabecera-caja">
@@ -101,6 +125,29 @@
       <input name="thesis" placeholder="Por que te interesa" style="flex:1">
       <input name="target_price" type="number" step="0.01" placeholder="Objetivo" style="max-width:110px">
       <button type="submit">Seguir</button>
+    </form>
+  </div>
+
+  <div class="caja">
+    <div class="cabecera-caja"><h2>Alertas</h2><a class="btn-ayuda" href="#" data-section="alertas" title="Mas informacion">?</a></div>
+    <p class="ayuda">Avisan de un hecho concreto &mdash; precio, media movil, RSI &mdash; cuando se cruza un umbral. Describen lo que pasa, nunca te dicen que comprar.</p>
+    <div id="avisos-alertas"></div>
+    <div id="tabla-alertas"></div>
+    <form id="form-alertas" class="form-linea">
+      <input name="ticker" placeholder="Ticker" required style="max-width:110px; text-transform:uppercase">
+      <select name="metric" title="Que valor se vigila">
+        <option value="price">Precio</option>
+        <option value="sma_50">SMA 50</option>
+        <option value="sma_200">SMA 200</option>
+        <option value="rsi_14">RSI 14</option>
+      </select>
+      <select name="operator" title="Direccion del cruce">
+        <option value="above">sobre</option>
+        <option value="below">bajo</option>
+      </select>
+      <input name="threshold" type="number" step="0.01" required placeholder="Umbral" style="max-width:120px">
+      <button type="submit">Crear alerta</button>
+      <button type="button" id="btn-comprobar-alertas">Comprobar ahora</button>
     </form>
   </div>
 </section>
@@ -222,9 +269,22 @@
       <li><b>Tabla</b> — cada posicion con coste medio, precio actual, variacion del dia, peso, P&L y su <b>Nota</b>.</li>
       <li><b>Actualizar precios</b> — boton manual. Auto-refresh cada 60s si el mercado esta abierto.</li>
       <li><b>Seguimiento (watchlist)</b> — anadir tickers para seguir sin tener posicion.</li>
+      <li><b>Alertas</b> — avisan cuando un precio, una media o el RSI cruza un umbral que fijas. Solo describen hechos ("RSI de ITX.MC bajo 30"), nunca recomiendan; se comprueban cada 60s si el mercado esta abierto.</li>
       <li><b>Monedas</b> — si compraste en EUR y cotiza en USD, se convierte automaticamente.</li>
       <li><b>Broker</b> — al registrar, en que plataforma lo ejecutaste (HapiBroker, ETF, Fondo mutuo, Otro). Es solo una etiqueta: <b>SeaLock no envia nada a ningun broker</b>.</li>
       <li><b>Pendientes de copiar</b> — las operaciones que aun no has pasado al broker, agrupadas por plataforma. Marcalas cuando lo hagas.</li>
+    </ul>
+  </div>
+
+  <div class="caja" data-section="alertas">
+    <h2>Alertas</h2>
+    <p>Avisan de un hecho concreto cuando se cruza un umbral que tu fijaste. Nunca recomiendan: la decision siempre es tuya.</p>
+    <ul>
+      <li><b>Que se vigila</b> — precio actual, media movil de 50 o 200 sesiones o RSI de 14 sesiones.</li>
+      <li><b>Direccion</b> — que el valor cruce "sobre" o "bajo" el umbral.</li>
+      <li><b>Disparo unico</b> — avisa una vez y se rearma cuando la condicion deja de cumplirse, para no insistir cada 60 segundos.</li>
+      <li><b>Cuando se comprueba</b> — en el auto-refresh de 60s si hay mercado abierto, o con "Comprobar ahora".</li>
+      <li><b>Hechos, no consejos</b> — "RSI de ITX.MC bajo 30" si; "momento de comprar" no, nunca.</li>
     </ul>
   </div>
 
@@ -235,7 +295,7 @@
       <li><b>Busqueda</b> — por nombre o ticker. Yahoo puede no encontrar europeos directamente; la app sondea aparte.</li>
       <li><b>Nota 1-10</b> — sintetiza fundamentales, valoracion, solidez, crecimiento, momentum y dividendo segun tu perfil.</li>
       <li><b>Fundamentales</b> — PER, EV/EBITDA, margen neto, ROE, capitalizacion, deuda neta, dividendo.</li>
-      <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, caida maxima, RSI, medias moviles.</li>
+      <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, caida maxima, RSI, medias moviles, ATR, Bollinger y MACD.</li>
       <li><b>Valor intrinseco</b> — DCF con tabla de sensibilidad + formulas de Graham.</li>
       <li><b>Estado de mercado</b> — badge ABIERTO/CERRADO/PREAPERTURA/POSTCIERRE. Mercado cerrado = ultimo cierre.</li>
       <li><b>Comparar acciones</b> — tabla lado a lado de 2 a 4 tickers, con fundamentales, pilares y nota final.</li>
@@ -293,7 +353,7 @@
       <li><b>Solidez financiera</b> — deuda/patrimonio, ratio corriente, deuda neta/EBITDA, flujo de caja libre.</li>
       <li><b>Resultados recientes</b> — los tres ultimos trimestres: ventas y BPA (__interanuales__, frente al mismo trimestre del ano anterior), variacion del margen neto, consistencia y sorpresa del BPA.</li>
       <li><b>Crecimiento</b> — ventas y beneficio interanual.</li>
-      <li><b>Momentum</b> — precio vs medias 50/200, rentabilidad 12 meses, RSI (Jegadeesh-Titman).</li>
+      <li><b>Momentum</b> — precio vs medias 50/200, rentabilidad 12 meses, RSI, MACD, Bollinger y ATR (Jegadeesh-Titman).</li>
       <li><b>Dividendo</b> — rentabilidad y payout. Si no reparte, el pilar se excluye salvo que tu preferencia sea "Dividendo".</li>
     </ul>
     <p>Pesos base segun tolerancia al riesgo (conservador/moderado/agresivo), ajustados por

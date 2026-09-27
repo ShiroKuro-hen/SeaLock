@@ -97,6 +97,26 @@ SeaLock: 225 nodos, 886 aristas. Excluye `datos/`. Cache en `~/.cache/codebase-m
   personales 1.0, retirada al hacerse SeaLock investing-only; se descartan, no se
   arrastran.
 
+## Convencion de punto en el tiempo
+
+Regla unica para cualquier serie historica, senal o curva de rentabilidad: **nada
+usa informacion posterior al instante en que se decide**. Vale para el backtest que
+aun no existe y ya hoy para lo que hay:
+
+- El **cierre de T** es lo ultimo que se ve. Una senal calculada con datos hasta T
+  solo se ejecuta **en T+1**: se compra en T+1, se vende en T+2 y el retorno de la
+  operacion es `precio(T+2) / precio(T+1) - 1`. Nunca `precio(T)/precio(T)`.
+- `historical().period_return_pct` es **trailing** (`closes[-1] / closes[0] - 1`
+  sobre la ventana pedida, sin nada posterior a `date_to`): mide momentum mirando
+  hacia atras, no una rentabilidad ya conseguida. Sirve de senal en T, no de
+  resultado. Si un dia hay backtest, ese numero no es su retorno.
+- Las plusvalias de `portfolio_view` salen de operaciones reales del usuario, con
+  su fecha y su precio. Se aplican por `date, id` con metodo de coste medio: lo
+  vendido se enfrenta al coste medio construido **solo** con las compras anteriores,
+  nunca con datos posteriores. Lo mismo para `average_cost`.
+- Consecuencia para HU-24 y HU-29: toda metrica o curva que se anada se calcula con
+  la posicion **tal como estaba en esa fecha**, no con la de hoy.
+
 ## Limites
 
 - **La nota es mecanica, no asesoramiento.** `scoring.score_stock()` aplica reglas
@@ -123,7 +143,7 @@ metricas propias en `[-1, 1]` y un peso que depende del perfil inversor:
 | Solidez financiera | 15 | Deuda/patrimonio, ratio corriente, deuda neta/EBITDA, signo del flujo de caja libre |
 | Resultados recientes | 15 | Crecimiento interanual de ventas, de BPA (o beneficio), variacion del margen neto, consistencia, sorpresa del BPA |
 | Crecimiento | 8 | Crecimiento interanual de ventas y beneficio |
-| Momentum | 7 | Precio vs medias 50/200, rentabilidad 12 meses, RSI |
+| Momentum | 7 | Precio vs medias 50/200, rentabilidad 12 meses, RSI, cruce MACD, %B de Bollinger, ATR |
 | Dividendo | 5 | Rentabilidad por dividendo, payout (excluido si no reparte, salvo preferencia "dividend") |
 
 Pesos base por perfil (`BASE_WEIGHTS`; cada perfil suma 100):
@@ -153,6 +173,16 @@ quality-minus-junk (margenes, ROA), momentum de Jegadeesh-Titman. El consenso de
 analistas entra solo como desempate debil en valoracion (medio peso): el sesgo
 optimista del sell-side esta documentado, por eso nunca decide por si solo.
 
+HU-23 (indicadores): `mcp/indicators.py` esta vendorizado de **talipp 2.7.0** (MIT, sin
+paquetes ni dependencias; procedencia en `mcp/FUENTE.md`, licencia en `mcp/LICENSE.talipp`,
+comprobacion contra la libreria real en `pruebas/compara_talipp.py`). `historical()` la
+alimenta de Yahoo: `high`/`low`/`close` de la misma respuesta, sin red nueva. El RSI paso
+de media simple a **suavizado de Wilder** (el canonico) tras verificar la equivalencia de
+los demas: en la serie del test da 47.9 en vez de 49.0, y como los umbrales son 30/70 solo
+se mueven las notas pegadas a la frontera. Del ATR solo se castiga el ruido extremo
+(>10% del precio): no tiene direccion, no compra puntos; el %B se lee como el RSI (fuera de
+banda = +-0.5, dentro = 0). Todo opcional: sin dato la metrica se salta, no puntua 0.
+
 `earnings_estimates()` (`mcp/mercado_server.py`) da las proyecciones hacia delante del
 consenso: BPA y ventas del trimestre y del ano que vienen, cuantos analistas cubren y
 cuantos han subido o bajado su estimacion en 30 dias. Se cachea en `_raw_inputs` como
@@ -174,6 +204,7 @@ proyecciones, no rellena.
 | Trimestres fiscales | Yahoo fundamentals-timeseries v1 | Alta EE.UU., **Parcial** Europa |
 | Proyecciones (consenso) | Yahoo quoteSummary earningsTrend | Media: es prevision, no dato |
 | Valoracion | Calculo local | Sin red |
+| Indicadores (SMA/EMA/RSI/ATR/Bollinger/MACD) | Calculo local en `mcp/indicators.py` (talipp vendorizado, ver `mcp/FUENTE.md`) | Sin red |
 
 Verificado agosto 2026:
 
@@ -358,9 +389,61 @@ La tabla en `app.js` (`renderComparar`) reutiliza las mismas etiquetas de fila q
 ficha (PER, EV/EBITDA, Margen neto, ROE, Dividendo, Nota, nombres de pilar), asi que
 no hace falta anadir entradas nuevas al glosario.
 
+### Metricas de cartera
+
+`mcp/metrics.py` (puro, sin red ni I/O) porta a stdlib las formulas de quantstats
+(Apache-2.0): Sharpe, Sortino, Calmar, drawdown maximo y retorno/volatilidad anualizados.
+La **tasa libre de riesgo** es un mando, `SEALOCK_RISK_FREE_RATE` (anual, decimal, por
+defecto 0): `summary()` la devuelve junto al resultado, nunca una constante escondida.
+Casos degenerados devuelven `null` en vez de un numero inventado (Sharpe sin volatilidad,
+Sortino sin caidas, Calmar sin drawdown).
+
+**El factor de anualizacion sale de las fechas, no de un 252 supuesto.** Yahoo muestrea las
+series largas: `range=max` devuelve ~12 puntos para 2,5 anos aunque pidas `interval=1d`.
+`periods_per_year_from_dates()` lo deriva del propio muestreo; usar 252 ahi daba Sharpe de
+77.000. Misma regla en `historical()`. `_closes` pide `5y` (que si viene diario), nunca
+`max`.
+
+Dos consumidores: `historical()` anade `sharpe`/`sortino`/`calmar`/`risk_free_rate` a su
+respuesta, y `app/portfolio_metrics` (`app/servidor.py`) compara la cartera con un
+benchmark (`^IBEX` por defecto). La serie la arma `portfolio_history()` (pura, testeable sin
+red): en cada fecha cuenta **solo la posicion ya comprada** y la valora al cierre de ese
+dia, junto al **coste medio de esas mismas acciones** (comisiones incluidas, y la venta
+restando al precio medio, como `portfolio_view`), segun § Convencion de punto en el tiempo;
+`_rate_at()` aplica el tipo de cambio del dia o el ultimo anterior, nunca el posterior.
+`value_series()` es su lado de valor, asi metricas y grafica no pueden divergir. Las divisas
+que no se pueden convertir se excluyen y salen en `not_converted`, igual que en
+`portfolio_valued`. Cache de series diarias 6 h en `_series_cache`: ahi esta el coste de red,
+no en el calculo.
+
+`portfolio_metrics` devuelve ademas `series` (`{date, value, cost, gain}`), la curva que
+pinta la caja **"Evolucion de la cartera"** de la pestana Cartera (HU-29) con
+`evolucionSVG()`: dos paneles SVG que comparten eje temporal (valor arriba; plusvalia
+latente con su linea de cero abajo, para que un negativo no se aplaste), mas las metricas de
+esa misma serie frente al benchmark y la tasa libre de riesgo usada. La carga al entrar en
+Cartera y al registrar una operacion, no en el refresco de 60 s.
+
 ### Glosario con rangos
 
 `glosario.js` tiene entradas con `rango` (valores tipicos) e `ideal` (optimo por dimension), incluidas las de la nota (`Nota`, `Cobertura`, cada pilar). Popover los muestra en badges de color antes de "Como leerlo". DISCLAIMER: rangos orientativos para empresas maduras; sectores varian.
+
+### Sistema de diseno y modo oscuro
+
+La paleta y la tipografia viven **solo** en variables de `estilo.css` (un test falla si
+vuelve a haber un hex o un `rgba` suelto): `--fondo*`/`--borde`/`--texto*`/`--acento`/
+`--verde`/`--rojo`/`--ambar`, `--sobre-acento` (el texto que va sobre el acento), cinco
+`--sombra-*` y seis tokens de tipo (`--t-2xs` 10 … `--t-2xl` 28). Importes, notas y el
+anillo llevan `font-variant-numeric: tabular-nums`.
+
+Tema por `<html data-tema="claro|oscuro">`: el script inline del `<head>` lo resuelve antes
+del primer pintado (sigue `prefers-color-scheme` si no has elegido, y asi no hay parpadeo)
+y el interruptor de la cabecera lo conmuta y lo persiste en `localStorage` (`sealock-tema`).
+Los dos bloques de paleta se escriben una sola vez cada uno; no los dupliques.
+
+**Contraste WCAG medido, no estimado**: en oscuro todo pasa AA-texto (>=4,5:1). En claro la
+paleta original no pasaba (`ambar` daba 3,38:1 sobre `fondo-alt`) y se oscurecieron
+`--ambar`, `--verde`, `--rojo`, `--texto-tenue` y `--acento`. Si tocas un color, vuelve a
+medirlo: la formula es la de WCAG (luminancia relativa).
 
 ### Facelift visual
 
@@ -383,8 +466,8 @@ de la fuente es HU-22.
 ## Pruebas
 
 ```bash
-python pruebas/prueba_humo.py    # 214 checks: finance + market + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones y Hidden Gems: select_gems, recompute_from_payload, rotacion de escaneo, sondeo de cobertura)
-python pruebas/prueba_web.py     # 80 checks: web API + defensas + B4 glosario + recomendaciones + Hidden Gems (universo/cache/escaneo) + arranque único + export + nota final y refresco de datos
+python pruebas/prueba_humo.py    # 262 checks: finance + market + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones, Hidden Gems, metricas de cartera, la serie punto-en-el-tiempo con coste e indicadores tecnicos HU-23)
+python pruebas/prueba_web.py     # 111 checks: web API + defensas + B4 glosario (incl. los indicadores HU-23) + recomendaciones + Hidden Gems (universo/cache/escaneo) + arranque único + export + nota final y refresco de datos + esqueletos, graficas SVG, modo oscuro y evolucion de cartera
 ```
 
 Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fallo.
