@@ -5,9 +5,10 @@ Fuente unica de lo pendiente. Sustituye a las secciones "Siguiente plan de accio
 aqui. Redactado 2026-09-25. Actualizado 2026-09-26: hechas HU-00, HU-01, HU-02, HU-03,
 HU-04, HU-05, HU-06, HU-07, HU-08, HU-09, HU-10, HU-11, HU-12, HU-13, HU-14, HU-15, HU-16,
 HU-17, HU-18, HU-19, HU-20, HU-21, HU-23, HU-24, HU-25, HU-26, HU-28, HU-29, HU-30, HU-31,
-HU-32, HU-33 y HU-34. Epicas 1, 2, 3, 4 y 5 cerradas. Quedan dos: **HU-22** (medir el
-retraso real de la fuente, necesita sesion regular de un dia laborable) y **HU-27**
-(ejecucion via broker, L, **requiere decision explicita** y contradice § Principios).
+HU-32, HU-33, HU-34, HU-35 y HU-36. Epicas 1, 2, 3, 4, 5, 6 y 7 cerradas. **HU-27** (ejecucion via broker) queda
+descartada por decision del usuario el 2026-09-26: obligaba a claves, sesiones y red saliente,
+que es justo lo que § Principios prohibe. Queda una sola abierta: **HU-22**, medir el retraso
+real de la fuente, que necesita sesion regular de un dia laborable.
 
 Convencion: `[ ]` pendiente, `[x]` hecho. Una HU se marca hecha solo cuando cumple
 todos sus criterios de aceptacion **y** la Definicion de Hecho global.
@@ -807,10 +808,6 @@ la compra posterior); (2) `period_return_pct` cuadra con `end/start - 1` de su p
 ventana. Consecuencia anadida para HU-24 y HU-29: toda metrica o curva se calcula con la
 posicion tal como estaba en esa fecha.
 
-### [ ] HU-27 — Ejecucion via broker (L) — antes E6, **REQUIERE DECISION PREVIA**
-- [ ] Decision explicita del usuario (contradice § Limites y § Principios).
-- [ ] Solo paper trading y como extra opcional; § Limites actualizado antes.
-
 ### [x] HU-28 — Exportar datos (S)
 **Como** inversor, **quiero** exportar cartera, watchlist y revisiones a CSV/JSON, **para**
 tener copia fuera de SeaLock.
@@ -872,8 +869,10 @@ falta por copiar a la plataforma, **para** no buscar una operacion donde no esta
 - [x] Tests en `prueba_humo.py` (8) y `prueba_web.py` (4).
 
 Nota: pedida fuera del plan. **SeaLock no manda nada a Hapi ni a ninguna plataforma**
-(§ Principios): `uploaded_at` es lo que tu marcas a mano, no un envio. Si algun dia se
-quiere sincronizar de verdad, es HU-27 y requiere decision expresa.
+(§ Principios): `uploaded_at` es lo que tu marcas a mano, no un envio. La idea de
+sincronizar de verdad queda **descartada**: era HU-27 y el usuario la cerro el 2026-09-26
+porque una API de broker obliga a claves, sesiones y peticiones salientes, que es
+justo lo que § Principios prohibe. El broker se queda como etiqueta de una operacion.
 
 ### [x] HU-33 — Proyecciones de analistas (M)
 **Como** inversor, **quiero** ver lo que espera el consenso de analistas para los proximos
@@ -945,7 +944,79 @@ la app como contexto y buscando en internet, **para** contrastar sin salir de Se
 Nota: rompe "Datos no salen" a proposito, y por eso queda escrito en § Principios como la
 unica excepcion. Con una *suscripcion* de Claude o ChatGPT **no** vale: hace falta una
 clave de API, que se cobra aparte. Ojo con el dato fiscal: no se envia nada
-automaticamente a Hapi ni a ningun broker (HU-27 sigue necesitando decision expresa).
+automaticamente a Hapi ni a ningun broker, y no habra modo de hacerlo (HU-27
+descartada: una API de broker exige claves, sesiones y red saliente).
+
+### [x] EPICA 7 - El precio, dibujado
+**Por** que existe: la ficha sabia de la nota bien, pero el precio solo se veia como una
+linea de 56 pixeles sin ejes ni fechas, y los indicadores que HU-23 calcula (SMA 50/200,
+Bollinger, MACD) se veian **solo como numeros**. El dato ya llegaba; faltaba dibujarlo.
+
+#### [x] HU-35 - Grafico de precio en la ficha (M)
+**Como** inversor, **quiero** ver el precio como un grafico de verdad, **para** leer la
+tendencia y los niveles sin adivinar.
+- [x] `precioSVG()` en `app.js`: linea con eje temporal, eje Y con min/max/ultimo, cruceta
+      y fecha al pasar el raton.
+- [x] **Cero peticiones nuevas**: se pinta `historical().closes`, que ya llega fechado y
+      completo (la serie entera de la ventana pedida, no los ultimos 60).
+- [x] Accesible: `role="img"` con los valores en el `aria-label`, y los numeros tambien
+      en texto (nunca solo dentro del SVG).
+- [x] Responsive sin libreria: `viewBox` + `width:100%` + `preserveAspectRatio`.
+- [x] Sustituye al `sparklineSVG(..., 280, 56)` de la caja "Comportamiento".
+- [x] Entradas de glosario para lo que se etiqueta (el test B4 las exige).
+
+Estado: hecho. `precioSVG()` escala a **todo lo que dibuja** (precio, medias y bandas), no
+solo al precio, asi que nada se sale del marco. Eje Y con min, max y ultimo cierre en
+numeros reales; si el min o el max cae a menos de 12 px del ultimo, esa etiqueta se quita
+para no amontonar tres numeros (en AAPL el ultimo cierre *era* el maximo del periodo, y
+solo salen dos). Eje X con la primera y la ultima fecha, en castellano y no en ISO.
+
+**La cruceta se alcanza sin raton.** `pointermove` (raton, tactil y lapiz en un solo
+manejador) pone la regla y el punto, y la lectura —fecha, cierre, media 50, banda— es un
+nodo de texto normal cuyo estado por defecto es el resumen de la ventana. Con el teclado,
+`keydown` mueve la cruceta con flechas, `+Shift` de 10 en 10, `Home` y `End`. Sin
+`aria-live` **a proposito**: la ficha se repinta cada 60 s y una region viva anunciaria los
+mismos numeros cada minuto.
+
+La caja "Comportamiento" salio de la `rejilla-2` a ancho completo: con el grafico dentro se
+quedaba en media columna, y un eje Y con etiqueta no se lee en 517 px. Las 12 metricas se
+mantienen debajo, ahora como segundo nivel: el grafico manda, los numeros explican.
+
+#### [x] HU-36 - Medias y bandas dibujadas (M)
+**Como** inversor, **quiero** ver las medias y las bandas de Bollinger sobre el precio,
+**para** saber si esta caro o barato frente a su propia historia.
+- [x] `historical()` devuelve la **serie** de los indicadores, no solo `.last()`:
+      `sma_50_series`, `sma_200_series`, `bollinger_upper_series`, `bollinger_lower_series`
+      y `macd_series` (`{date, macd, signal, histogram}`), alineadas por indice con `series`.
+- [x] **Sin peticiones nuevas**: `indicators.SMA(50, closes)` ya devuelve la serie entera;
+      el calculo no cambia, solo se deja de tirar todo menos el ultimo valor.
+- [x] SMA 50/200 y banda de Bollinger sobre el grafico de HU-35; panel de MACD debajo.
+- [x] Un `None` (la semilla del indicador) se salta: la linea empieza cuando hay dato, no
+      en 0.
+- [x] Checks en `prueba_humo.py`: la serie coincide con `.last()`, las fechas van alineadas
+      y las semillas son `None`.
+
+Estado: hecho. Las cinco series salen **solo con `include_series=True`**, en el mismo bloque
+que ya construia `closes`/`recent_closes`, para que la respuesta normal no engorde (un
+check lo fija). El calculo es identico: se Atacan los mismos objetos y se toma `.last()` de
+aqui, asi que los escalares no cambian ni un decimal — cuatro checks lo comprueban, incluido
+el ultimo valor de cada serie contra su escalar.
+
+`BB` y `MACD` emiten un `None` a secas en la semilla (no un objeto con campos a `None`), que
+es lo que hace que las series se construyan con `if v else None`. Y hay una guarda: si
+alguna serie viniera con distinta longitud que `closes`, no se emite ninguna, antes que
+publicar una serie desalineada.
+
+Las lineas se construyen por **tramos contiguos** de valores no nulos: la semilla se salta
+y, sobre todo, no se une un `None` con un valor inventingose una recta que miente.
+
+`macdSVG()` tiene escala propia (independiente de la del precio), histograma en
+`--verde`/`--rojo` y linea de cero, que es lo que hace legible el histograma. Las 12
+metricas de la caja no se tocan: solo se ordenan para que el grafico lidere.
+
+Queda fuera a proposito: selector de rango (1m/3m/6m/1y/5y) y volumen. El primero **si**
+exige una peticion por rango — la ficha esta fija en `1y` — y el volumen no se pide a Yahoo
+hoy. Se quedan para cuando de verdad se echen de menos.
 
 ---
 

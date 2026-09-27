@@ -449,6 +449,36 @@ medirlo: la formula es la de WCAG (luminancia relativa).
 
 Sombras sutiles en cajas/header, hover lift en tarjetas/metricas/botones, transiciones suaves (0.12-0.2s), ticker badge, precio ficha con gradiente, radio 12px.
 
+### Grafico de precio de la ficha (HU-35, HU-36)
+
+El precio se ve **dibujado**, no como un sparkline de 56 px. `precioSVG()` y `macdSVG()`
+en `app.js`, SVG inline sin librerias, con `viewBox` + `width:100%` (responsive sin
+build). Encima van las medias 50/200 y la banda de Bollinger; debajo, el panel de MACD con
+su propia escala. Colores **solo por variables** (`--acento`, `--texto-tenue`, `--verde`,
+`--rojo`, `--borde`); la banda usa `fill-opacity`, nunca `rgba` (hay un test que lo falla).
+
+**De donde sale el dato, y por que no cuesta una peticion**: `historical(include_series=True)`
+ya devolvia `closes` con la serie **entera y fechada** de la ventana pedida, y los
+indicadores de `mcp/indicators.py` ya devolvian su serie completa — el codigo solo hacia
+`.last()`. HU-36 devuelve tambien `sma_50_series`, `sma_200_series`,
+`bollinger_upper_series`, `bollinger_lower_series` y `macd_series`, alineadas por indice con
+`closes` y **solo con `include_series`**, para que la respuesta normal no engorde. El
+cálculo no cambia: el último valor de cada serie es el escalar de antes, y un check lo
+pinta. La semilla es `null`, nunca 0, y las lineas se saltan los `null` en tramos
+contiguos: una linea recta entre dos datos inexistentes miente.
+
+`pintarPrecio()` se llama **despues** de que la ficha este en el DOM, para que el `viewBox`
+mida el ancho real de la caja (con un ancho fijo el texto de los ejes se deformaria en
+movil). La cruceta va con `pointermove` (raton, tactil y lapiz en un manejador) y con
+`keydown` (flechas, `+Shift` de 10 en 10, `Home`/`End`), asi que los numeros se alcanzan
+**sin raton**: la lectura es un nodo de texto normal cuyo estado por defecto es el resumen
+de la ventana. Sin `aria-live` a proposito: la ficha se repinta cada 60 s y una region viva
+anunciaria los mismos numeros cada minuto.
+
+`sparklineSVG()` sigue existiendo para las tarjetas de Hidden Gemas; la ficha ya no lo usa.
+Ojo al peso: `_raw_inputs` cachea todo el dict de `historical()`, asi que la ventana de un
+ano lleva ahora cinco series mas al navegador. Es el precio del grafico.
+
 ## Frescura del precio
 
 Hallazgo 2026-08-16: sin auto-refresh, sin edad de precio. `quote` devolvia cierre
@@ -466,8 +496,8 @@ de la fuente es HU-22.
 ## Pruebas
 
 ```bash
-python pruebas/prueba_humo.py    # 262 checks: finance + market + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones, Hidden Gems, metricas de cartera, la serie punto-en-el-tiempo con coste e indicadores tecnicos HU-23)
-python pruebas/prueba_web.py     # 111 checks: web API + defensas + B4 glosario (incl. los indicadores HU-23) + recomendaciones + Hidden Gems (universo/cache/escaneo) + arranque único + export + nota final y refresco de datos + esqueletos, graficas SVG, modo oscuro y evolucion de cartera
+python pruebas/prueba_humo.py    # 289 checks: finance + market + scoring.py, quarterly_derive y review_status puros (incl. recomendaciones, Hidden Gems, metricas de cartera, la serie punto-en-el-tiempo con coste e indicadores tecnicos HU-23, y las series de los indicadores HU-36)
+python pruebas/prueba_web.py     # 126 checks: web API + defensas + B4 glosario (incl. los indicadores HU-23) + recomendaciones + Hidden Gems (universo/cache/escaneo) + arranque único + export + nota final y refresco de datos + esqueletos, graficas SVG, modo oscuro y evolucion de cartera + el grafico de precio HU-35/HU-36 (se renderiza en node; sin node salen AVISO, nunca un OK falso)
 ```
 
 Subprocesos con DB temporal, sin tocar `datos/finanzas.db`. Red = AVISO, no fallo.

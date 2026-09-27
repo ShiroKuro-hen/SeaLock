@@ -723,6 +723,7 @@ _get_json_orig = mer._get_json
 mer._get_json = lambda url: _payload_h23
 try:
     hist23 = mer.historical("TEST", "1y", "1d", include_series=False)
+    hist36 = mer.historical("TEST", "1y", "1d", include_series=True)
 finally:
     mer._get_json = _get_json_orig
 
@@ -749,6 +750,47 @@ check("HU-23: el cierre nulo se salta y las medias siguen cuadrando con la media
       hist23["observations"] == 259
       and hist23["sma_50"] == round(sum(limpios23[-50:]) / 50, 4),
       f"obs={hist23['observations']} sma50={hist23['sma_50']}")
+
+# --- HU-36: los indicadores vuelven como serie, no solo como ultimo valor ---
+SERIES36 = ("sma_50_series", "sma_200_series", "bollinger_upper_series",
+            "bollinger_lower_series", "macd_series")
+
+
+def ultimo36(serie, campo="value"):
+    return next(p[campo] for p in reversed(serie) if p[campo] is not None)
+
+
+check("HU-36: la serie de cada indicador termina donde acaba su escalar (mismo calculo, mas datos)",
+      ultimo36(hist36["sma_50_series"]) == hist36["sma_50"]
+      and ultimo36(hist36["sma_200_series"]) == hist36["sma_200"]
+      and ultimo36(hist36["bollinger_upper_series"]) == hist36["bollinger_upper"]
+      and ultimo36(hist36["bollinger_lower_series"]) == hist36["bollinger_lower"]
+      and ultimo36(hist36["macd_series"], "macd") == hist36["macd"]
+      and ultimo36(hist36["macd_series"], "signal") == hist36["macd_signal"],
+      f"sma50={ultimo36(hist36['sma_50_series'])} sma200={ultimo36(hist36['sma_200_series'])} "
+      f"ub={ultimo36(hist36['bollinger_upper_series'])} "
+      f"macd={ultimo36(hist36['macd_series'], 'macd')}")
+
+CLO36 = hist36["closes"]
+check("HU-36: las series van alineadas con closes: misma fecha y misma longitud",
+      all(len(hist36[k]) == len(CLO36) for k in SERIES36)
+      and all(hist36[k][-1]["date"] == CLO36[-1]["date"] for k in SERIES36)
+      and all(p["date"] == c["date"] for k in SERIES36 for p, c in zip(hist36[k], CLO36)),
+      f"obs={len(CLO36)} desde={CLO36[0]['date']} hasta={CLO36[-1]['date']}")
+
+check("HU-36: la semilla del indicador es None, no un 0 (la linea empieza cuando hay dato)",
+      hist36["sma_50_series"][0]["value"] is None
+      and hist36["sma_200_series"][0]["value"] is None
+      and hist36["bollinger_upper_series"][0]["value"] is None
+      and hist36["bollinger_lower_series"][0]["value"] is None
+      and hist36["macd_series"][0]["macd"] is None
+      and hist36["macd_series"][0]["signal"] is None
+      and hist36["macd_series"][0]["histogram"] is None,
+      str(hist36["macd_series"][0]))
+
+check("HU-36: las series solo salen con include_series, la respuesta normal no engorda",
+      not any(k in hist23 for k in SERIES36),
+      str([k for k in SERIES36 if k in hist23]))
 
 # --- pilar Momentum con los indicadores nuevos ---
 MOM_BASE = {"sma_50": 100, "sma_200": 90, "period_return_pct": 10, "rsi_14": 55}

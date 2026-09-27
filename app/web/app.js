@@ -917,38 +917,46 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
           se han calculado por identidad contable.</div>` : ""}
       </div>
 
-      <div class="rejilla-2">
-        <div class="caja">
+      <div class="caja">
+        <div class="cabecera-caja">
           <h2>Comportamiento (1 año)</h2>
-          ${sparklineSVG(h.closes || h.recent_closes, "var(--acento)", 280, 56)}
-          <div class="metricas">
-            ${metrica("Rentabilidad", h.period_return_pct !== undefined ? pct(h.period_return_pct) : "—")}
-            ${metrica("Volatilidad", h.annualized_volatility_pct ? `${number(h.annualized_volatility_pct, 1)} %` : "—")}
-            ${metrica("Max. caida", h.max_drawdown_pct !== undefined ? `${number(h.max_drawdown_pct, 1)} %` : "—")}
-            ${metrica("Sharpe", number(h.sharpe, 2))}
-            ${metrica("Sortino", number(h.sortino, 2))}
-            ${metrica("Calmar", number(h.calmar, 2))}
-            ${metrica("RSI 14", number(h.rsi_14, 0))}
-            ${metrica("Media 50", number(h.sma_50, 2))}
-            ${metrica("Media 200", number(h.sma_200, 2))}
-            ${metrica("ATR 14", number(h.atr_14, 2))}
-            ${metrica("Bollinger %B", bollingerPB(h, c.price))}
-            ${metrica("MACD", number(h.macd, 2))}
-          </div>
+          <a class="btn-ayuda" href="#" data-section="precio" title="Mas informacion">?</a>
         </div>
-        <div class="caja">
-          <h2>Valor intrinseco</h2>
-          <form id="form-dcf" class="form-rejilla" style="margin-bottom:14px">
-            <label>Crecim. % <input name="growth_pct" type="number" step="0.5"
-              value="${assumptions.growth_pct ?? 8}"></label>
-            <label>Descuento % <input name="discount_rate_pct" type="number" step="0.5"
-              value="${assumptions.discount_rate_pct ?? 9}"></label>
-            <label>Terminal % <input name="terminal_growth_pct" type="number" step="0.1"
-              value="${assumptions.terminal_growth_pct ?? 2.5}"></label>
-            <button type="submit">Recalcular</button>
-          </form>
-          ${renderValuation(d, c)}
+        <div class="precio-leyenda" id="precio-leyenda">
+          <span><i class="lg-cierre"></i>Precio</span>
+          <span data-glosario="Media 50"><i class="lg-sma50"></i>Media 50</span>
+          <span data-glosario="Media 200"><i class="lg-sma200"></i>Media 200</span>
+          <span data-glosario="Bandas de Bollinger"><i class="lg-banda"></i>Banda de Bollinger</span>
         </div>
+        <div id="precio-grafico"></div>
+        <div class="metricas" style="margin-top:14px">
+          ${metrica("Rentabilidad", h.period_return_pct !== undefined ? pct(h.period_return_pct) : "—")}
+          ${metrica("Volatilidad", h.annualized_volatility_pct ? `${number(h.annualized_volatility_pct, 1)} %` : "—")}
+          ${metrica("Max. caida", h.max_drawdown_pct !== undefined ? `${number(h.max_drawdown_pct, 1)} %` : "—")}
+          ${metrica("Sharpe", number(h.sharpe, 2))}
+          ${metrica("Sortino", number(h.sortino, 2))}
+          ${metrica("Calmar", number(h.calmar, 2))}
+          ${metrica("RSI 14", number(h.rsi_14, 0))}
+          ${metrica("Media 50", number(h.sma_50, 2))}
+          ${metrica("Media 200", number(h.sma_200, 2))}
+          ${metrica("ATR 14", number(h.atr_14, 2))}
+          ${metrica("Bollinger %B", bollingerPB(h, c.price))}
+          ${metrica("MACD", number(h.macd, 2))}
+        </div>
+      </div>
+
+      <div class="caja">
+        <h2>Valor intrinseco</h2>
+        <form id="form-dcf" class="form-rejilla" style="margin-bottom:14px">
+          <label>Crecim. % <input name="growth_pct" type="number" step="0.5"
+            value="${assumptions.growth_pct ?? 8}"></label>
+          <label>Descuento % <input name="discount_rate_pct" type="number" step="0.5"
+            value="${assumptions.discount_rate_pct ?? 9}"></label>
+          <label>Terminal % <input name="terminal_growth_pct" type="number" step="0.1"
+            value="${assumptions.terminal_growth_pct ?? 2.5}"></label>
+          <button type="submit">Recalcular</button>
+        </form>
+        ${renderValuation(d, c)}
       </div>
 
       ${renderQuarterly(d.quarterly)}
@@ -1001,6 +1009,8 @@ async function viewStock(ticker, assumptions = {}, silencioso = false, fromRec =
       </div>`;
 
     cont.querySelectorAll(".metrica[data-glosario]").forEach(attachGlossary);
+    cont.querySelectorAll("#precio-leyenda [data-glosario]").forEach(makeFocusable);
+    pintarPrecio(h, c);
     cont.querySelectorAll("[data-news-tab]").forEach((b) =>
       b.addEventListener("click", () => { NEWS.tab = b.dataset.newsTab; renderNews(); }));
     loadNews(ticker);
@@ -1153,7 +1163,278 @@ function anilloSVG(score, sentiment, size = 64) {
   </svg>`;
 }
 
-/** Sparkline SVG de precios: una linea sin ejes, con los valores en el texto alternativo. */
+/* ---------------------------------------------------- grafico de precio (HU-35/36) */
+
+/** Etiqueta de precio para ejes y lecturas: sin decimales cuando el valor ya es grande,
+ *  que es justo cuando el hueco del eje se queda corto. */
+const etiquetaPrecio = (v) => number(v, Math.abs(v) >= 1000 ? 0 : 2);
+
+/** "AAAA-MM-DD" -> "sept 2026" (o "27 sept 2026" con conDia). La fecha se arma con dia
+ *  y mes locales a proposito: new Date(iso) se lee como UTC, y en husos por delante de
+ *  GMT la etiqueta se iria un dia. */
+function fechaEs(iso, conDia = false) {
+  const p = String(iso || "").split("-");
+  const d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]) || 1);
+  if (p.length < 2 || Number.isNaN(d.getTime())) return String(iso || "");
+  return new Intl.DateTimeFormat("es-ES", conDia
+    ? { day: "numeric", month: "short", year: "numeric" }
+    : { month: "short", year: "numeric" }).format(d);
+}
+
+/** Serie de un indicador solo si viene alineada por indice con los cierres: con otra
+ *  longitud la media se dibujaria sobre la fecha equivocada, asi que se descarta. */
+function serieAlineada(h, clave) {
+  const s = h && h[clave];
+  const c = (h && h.closes) || [];
+  return Array.isArray(s) && s.length && s.length === c.length ? s : null;
+}
+
+/** Polylines de los tramos contiguos con dato. La semilla de un indicador llega como
+ *  null y se salta: la linea empieza donde hay valor y no une los dos lados del hueco
+ *  con un tramo recto que estaria inventando precio. Un tramo de un punto no dibuja. */
+function runsLinea(vals, x, y) {
+  const runs = [];
+  let r = [];
+  vals.forEach((v, i) => {
+    if (typeof v === "number" && isFinite(v)) r.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    else if (r.length) { runs.push(r); r = []; }
+  });
+  if (r.length) runs.push(r);
+  return runs.filter((q) => q.length > 1).map((q) => q.join(" "));
+}
+
+const SERIES_INDICADORES = ["sma_50_series", "sma_200_series",
+  "bollinger_upper_series", "bollinger_lower_series"];
+
+/** Geometria del panel de precio. La comparten el dibujo y la cruceta: si cada uno
+ *  escalara por su cuenta, el punto caeria fuera de la linea. Un cierre sin dato deja
+ *  el grafico entero sin pintar, porque descuadraria los indices de los indicadores. */
+function precioGeometria(h, opts = {}) {
+  const pts = (h && h.closes) || [];
+  if (pts.length < 2 || !pts.every((p) => p && Number.isFinite(p.close))) return null;
+  const W = Math.max(280, Math.round(opts.ancho || 520));
+  const H = Math.max(120, Math.round(opts.alto || Math.min(230, Math.max(150, W * 0.44))));
+  const GUT = 52, TOP = 8, DER = 8, H_EJE = 16;
+  const n = pts.length, x0 = GUT, x1 = W - DER;
+  // Se escala a todo lo que se dibuja, no solo al precio: si una banda se saliera del
+  // panel, el grafico diria una cosa y la banda otra.
+  const pintados = pts.map((p) => p.close);
+  for (const clave of SERIES_INDICADORES) {
+    const s = serieAlineada(h, clave);
+    if (s) for (const q of s) if (Number.isFinite(q.value)) pintados.push(q.value);
+  }
+  const cierre = pts.map((p) => p.close);
+  let lo = Math.min(...pintados), hi = Math.max(...pintados);
+  const holgura = (hi - lo || Math.abs(hi) * 0.01 || 1) * 0.06;
+  lo -= holgura; hi += holgura;
+  return {
+    W, H, n, pts, x0, x1, TOP,
+    base: TOP + H + H_EJE,
+    min: Math.min(...cierre), max: Math.max(...cierre), ultimo: cierre[n - 1],
+    x: (i) => x0 + (i * (x1 - x0)) / (n - 1),
+    y: (v) => TOP + H - ((v - lo) / (hi - lo)) * H,
+  };
+}
+
+/** Banda de Bollinger: poligono entre las dos series, solo en los tramos donde las dos
+ *  tienen valor. Donde la semilla no ha dado todavia no hay banda, no una banda plana. */
+function bandaPolygon(sup, inf, x, y) {
+  const ambos = (k) => k < sup.length && Number.isFinite(sup[k].value) && Number.isFinite(inf[k].value);
+  const polys = [];
+  let i = 0;
+  while (i < sup.length) {
+    if (!ambos(i)) { i++; continue; }
+    const ini = i;
+    while (ambos(i)) i++;
+    if (i - ini < 2) continue;
+    const arriba = [], abajo = [];
+    for (let k = ini; k < i; k++) {
+      arriba.push(`${x(k).toFixed(1)},${y(sup[k].value).toFixed(1)}`);
+      abajo.unshift(`${x(k).toFixed(1)},${y(inf[k].value).toFixed(1)}`);
+    }
+    polys.push(`<polygon class="p-banda" points="${arriba.concat(abajo).join(" ")}"/>`);
+  }
+  return polys.join("");
+}
+
+/** Grafico de precio de la ficha (HU-35). SVG inline, sin librerias y sin peticiones
+ *  nuevas: la serie ya llega fechada y completa. El viewBox toma el ancho real de la
+ *  caja, medido al pintar, para que las etiquetas del eje no escalen con la grafica. */
+function precioSVG(h, opts = {}) {
+  const g = precioGeometria(h, opts);
+  if (!g) return "";
+  const linea = (vals, clase) => runsLinea(vals, g.x, g.y)
+    .map((q) => `<polyline class="${clase}" points="${q}"/>`).join("");
+  const valores = (clave) => {
+    const s = serieAlineada(h, clave);
+    return s ? s.map((q) => q.value) : [];
+  };
+  const sup = serieAlineada(h, "bollinger_upper_series");
+  const inf = serieAlineada(h, "bollinger_lower_series");
+  const moneda = opts.moneda ? ` ${opts.moneda}` : "";
+  const texto = `${g.n} cierres, del ${fechaEs(g.pts[0].date, true)} al `
+    + `${fechaEs(g.pts[g.n - 1].date, true)}: minimo ${etiquetaPrecio(g.min)}, maximo `
+    + `${etiquetaPrecio(g.max)}, ultimo cierre ${etiquetaPrecio(g.ultimo)}${moneda}`;
+  // Minimo, maximo y ultimo cierre: tres numeros del propio dato, con su rejilla, que
+  // es lo que hace legible la escala sin tener que pasar el raton. El ultimo cierre se
+  // rotula siempre; minimo y maximo solo cuando no se le echan encima (un cierre en
+  // maximo del periodo pondria los tres numeros superpuestos).
+  const ejes = [[g.ultimo, "p-y p-y-actual"]];
+  for (const v of [g.max, g.min]) {
+    const y = g.y(v);
+    if (!ejes.some(([w]) => Math.abs(g.y(w) - y) < 12)) ejes.push([v, "p-y"]);
+  }
+  const ejeY = ejes.map(([v, clase]) => `<text class="${clase}" x="${g.x0 - 6}"
+    y="${(g.y(v) + 3).toFixed(1)}" text-anchor="end">${etiquetaPrecio(v)}</text>`).join("");
+  return `<svg class="precio-svg" viewBox="0 0 ${g.W} ${g.base}" role="img" tabindex="0"
+    preserveAspectRatio="xMidYMid meet" aria-label="Grafico de precio: ${esc(texto)}">
+    <title>${esc(texto)}</title>
+    <line class="p-rejilla" x1="${g.x0}" y1="${g.y(g.ultimo).toFixed(1)}"
+      x2="${g.x1}" y2="${g.y(g.ultimo).toFixed(1)}"/>
+    ${sup && inf ? bandaPolygon(sup, inf, g.x, g.y) : ""}
+    ${linea(valores("bollinger_upper_series"), "p-banda-borde")}
+    ${linea(valores("bollinger_lower_series"), "p-banda-borde")}
+    ${linea(valores("sma_50_series"), "p-sma50")}
+    ${linea(valores("sma_200_series"), "p-sma200")}
+    <polyline class="p-cierre" points="${g.pts
+      .map((p, i) => `${g.x(i).toFixed(1)},${g.y(p.close).toFixed(1)}`).join(" ")}"/>
+    <circle class="p-cierre-fin" cx="${g.x(g.n - 1).toFixed(1)}" cy="${g.y(g.ultimo).toFixed(1)}" r="3"/>
+    ${ejeY}
+    <text class="p-x" x="${g.x0}" y="${g.base - 2}">${esc(fechaEs(g.pts[0].date))}</text>
+    <text class="p-x" x="${g.x1}" y="${g.base - 2}" text-anchor="end">${esc(fechaEs(g.pts[g.n - 1].date))}</text>
+    <g class="p-cruz"><line y1="${g.TOP}" y2="${g.TOP + g.H}"/><circle r="4"/></g>
+  </svg>`;
+}
+
+/** Panel de MACD (HU-36), debajo del precio. Escala propia: su magnitud no se compara
+ *  con el precio, y el histograma solo se lee con su linea de cero. */
+function macdSVG(h, opts = {}) {
+  const serie = (h && h.macd_series) || [];
+  if (serie.length < 2) return "";
+  const W = Math.max(280, Math.round(opts.ancho || 520));
+  const H = Math.max(56, Math.round(opts.alto || 88));
+  const GUT = 52, TOP = 6, DER = 8;
+  const n = serie.length, x0 = GUT, x1 = W - DER;
+  const x = (i) => x0 + (i * (x1 - x0)) / (n - 1);
+  const macd = serie.map((p) => p.macd), senal = serie.map((p) => p.signal);
+  const hist = serie.map((p) => p.histogram);
+  const todos = [...macd, ...senal, ...hist].filter((v) => typeof v === "number" && isFinite(v));
+  if (todos.length < 2) return "";
+  const max = Math.max(...todos), min = Math.min(...todos);
+  const holgura = (max - min || 1) * 0.12;
+  const lo = Math.min(0, min) - holgura, hi = Math.max(0, max) + holgura;
+  const y = (v) => TOP + H - ((v - lo) / (hi - lo)) * H;
+  const ancho = Math.max(1, ((x1 - x0) / n) * 0.62);
+  const linea = (vals, clase) => runsLinea(vals, x, y)
+    .map((q) => `<polyline class="${clase}" points="${q}"/>`).join("");
+  const barras = hist.map((v, i) => {
+    if (typeof v !== "number" || !isFinite(v)) return "";
+    return `<rect class="${v >= 0 ? "p-hist-alza" : "p-hist-baja"}" x="${(x(i) - ancho / 2).toFixed(1)}"
+      y="${Math.min(y(v), y(0)).toFixed(1)}" width="${ancho.toFixed(2)}"
+      height="${Math.abs(y(v) - y(0)).toFixed(1)}"/>`;
+  }).join("");
+  const texto = `Panel de MACD (medias de 12 y 26 sesiones): de ${number(min, 2)} a `
+    + `${number(max, 2)}; ultimo MACD ${number(macd[n - 1], 2)}, senal ${number(senal[n - 1], 2)}`;
+  return `<svg class="macd-svg" viewBox="0 0 ${W} ${TOP + H + 14}" role="img" tabindex="0"
+    preserveAspectRatio="xMidYMid meet" aria-label="${esc(texto)}">
+    <title>${esc(texto)}</title>
+    ${barras}
+    <line class="p-cero" x1="${x0}" y1="${y(0).toFixed(1)}" x2="${x1}" y2="${y(0).toFixed(1)}"/>
+    <line class="p-rejilla" x1="${x0}" y1="${y(max).toFixed(1)}" x2="${x1}" y2="${y(max).toFixed(1)}"/>
+    <line class="p-rejilla" x1="${x0}" y1="${y(min).toFixed(1)}" x2="${x1}" y2="${y(min).toFixed(1)}"/>
+    ${linea(macd, "p-macd")}
+    ${linea(senal, "p-senal")}
+    <text class="p-y" x="${x0 - 6}" y="${(y(max) + 3).toFixed(1)}" text-anchor="end">${number(max, 2)}</text>
+    <text class="p-y" x="${x0 - 6}" y="${(y(min) + 3).toFixed(1)}" text-anchor="end">${number(min, 2)}</text>
+    <text class="p-y" x="${x0 - 6}" y="${(y(0) + 3).toFixed(1)}" text-anchor="end">0</text>
+  </svg>`;
+}
+
+/** Pinta el grafico ya insertado en la ficha. El ancho sale de la caja real: cuando se
+ *  arma el HTML todavia no esta en el DOM, y un viewBox de ancho fijo escalaria las
+ *  etiquetas del eje en movil. */
+function pintarPrecio(h, cot = {}) {
+  const cont = document.getElementById("precio-grafico");
+  if (!cont) return;
+  const opts = { ancho: cont.clientWidth || 520, moneda: cot.currency };
+  const g = precioGeometria(h, opts);
+  if (!g) {
+    cont.innerHTML = '<div class="vacio">Sin serie de precios suficiente para dibujar el grafico.</div>';
+    return;
+  }
+  const leyenda = '<div class="precio-leyenda">'
+    + '<span data-glosario="MACD"><i class="lg-macd"></i>MACD (12-26-9)</span>'
+    + '<span data-glosario="Señal MACD"><i class="lg-senal"></i>Señal (9)</span></div>';
+  cont.innerHTML = precioSVG(h, opts) + '<div class="precio-lectura"></div>'
+    + leyenda + macdSVG(h, opts);
+  cont.querySelectorAll("[data-glosario]").forEach(makeFocusable);
+  const svg = cont.querySelector(".precio-svg");
+  const lectura = cont.querySelector(".precio-lectura");
+  if (svg && lectura) wirePrecio(svg, h, g, lectura, opts);
+}
+
+/** Cruceta del grafico de precio: regla vertical, punto sobre la linea y lectura de
+ *  fecha, cierre y valor de cada indicador en ese dia. Funciona con raton, con el dedo
+ *  y con teclado (flechas), y los numeros existen tambien como texto sin interactuar. */
+function wirePrecio(svg, h, g, lectura, opts) {
+  const cruz = svg.querySelector(".p-cruz");
+  const regla = cruz.querySelector("line"), punto = cruz.querySelector("circle");
+  const valores = (clave) => {
+    const s = serieAlineada(h, clave);
+    return s ? s.map((q) => q.value) : [];
+  };
+  const sma50 = valores("sma_50_series"), sma200 = valores("sma_200_series");
+  const sup = valores("bollinger_upper_series"), inf = valores("bollinger_lower_series");
+  const moneda = opts.moneda ? ` ${opts.moneda}` : "";
+  const resumen = () => `Min. ${etiquetaPrecio(g.min)} · Max. ${etiquetaPrecio(g.max)} · `
+    + `Ultimo ${etiquetaPrecio(g.ultimo)}${moneda} (${fechaEs(g.pts[g.n - 1].date, true)})`;
+  const puntoTexto = (i) => {
+    const partes = [`${fechaEs(g.pts[i].date, true)} · cierre ${etiquetaPrecio(g.pts[i].close)}`];
+    if (Number.isFinite(sma50[i])) partes.push(`media 50 ${etiquetaPrecio(sma50[i])}`);
+    if (Number.isFinite(sma200[i])) partes.push(`media 200 ${etiquetaPrecio(sma200[i])}`);
+    if (Number.isFinite(sup[i]) && Number.isFinite(inf[i]))
+      partes.push(`banda ${etiquetaPrecio(inf[i])} - ${etiquetaPrecio(sup[i])}`);
+    return partes.join(" · ");
+  };
+  let iActual = g.n - 1;
+  const marcar = (i) => {
+    iActual = Math.max(0, Math.min(g.n - 1, i));
+    const x = g.x(iActual).toFixed(1), y = g.y(g.pts[iActual].close).toFixed(1);
+    svg.classList.add("con-cruz");
+    regla.setAttribute("x1", x);
+    regla.setAttribute("x2", x);
+    punto.setAttribute("cx", x);
+    punto.setAttribute("cy", y);
+    lectura.textContent = puntoTexto(iActual);
+  };
+  const soltar = () => {
+    svg.classList.remove("con-cruz");
+    lectura.textContent = resumen();
+  };
+  const desdeEvento = (ev) => {
+    const r = svg.getBoundingClientRect();
+    if (!r.width) return;
+    const vx = ((ev.clientX - r.left) / r.width) * g.W;
+    marcar(Math.round(((vx - g.x0) / (g.x1 - g.x0)) * (g.n - 1)));
+  };
+  svg.addEventListener("pointermove", desdeEvento);
+  svg.addEventListener("pointerdown", desdeEvento);
+  svg.addEventListener("pointerleave", soltar);
+  svg.addEventListener("blur", soltar);
+  svg.addEventListener("keydown", (ev) => {
+    const salto = ev.shiftKey ? 10 : 1;
+    if (ev.key === "ArrowLeft") marcar(iActual - salto);
+    else if (ev.key === "ArrowRight") marcar(iActual + salto);
+    else if (ev.key === "Home") marcar(0);
+    else if (ev.key === "End") marcar(g.n - 1);
+    else return;
+    ev.preventDefault();
+  });
+  lectura.textContent = resumen();
+}
+
+/** Sparkline SVG de precios: una linea sin ejes, con los valores en el texto alternativo.
+ *  La usa la tarjeta de Hidden Gems; el grafico de la ficha es precioSVG(). */
 function sparklineSVG(puntos, color = "var(--acento)", w = 120, h = 32) {
   const vals = (puntos || [])
     .map((p) => (p && typeof p === "object" ? p.close : p))
@@ -2100,6 +2381,28 @@ const HELP_CARD = {
       <p>Cifras mecanicas sobre datos publicos, no asesoramiento: el pasado no garantiza el
         futuro.</p>`,
   },
+  precio: {
+    titulo: "Grafico de precio",
+    contenido: `<p>El precio de cierre de la ventana pedida, con las medias y las bandas que
+      la app ya calculaba. <b>Cero peticiones nuevas</b>: es la misma serie que sale en las
+      metricas de debajo.</p>
+      <ul>
+        <li><b>Eje Y</b> — minimo, maximo y ultimo cierre, con el numero real de cada uno.</li>
+        <li><b>Media 50 y 200</b> — precio medio de los ultimos 50 o 200 dias. La de 200
+          solo empieza cuando hay 200 sesiones, y por ahi la linea aparece mas tarde.</li>
+        <li><b>Banda de Bollinger</b> — media de 20 sesiones mas/menos 2 desviaciones: la
+          zona que el precio considera "normal" segun su propia historia.</li>
+        <li><b>MACD</b> — panel de debajo, con escala propia. Las barras son el histograma
+          (diferencia entre el MACD y su senal), no el precio.</li>
+        <li><b>Sin dato, sin linea</b> — donde el indicador aun no tiene valor la linea
+          simplemente no empieza. No se inventa un 0 ni se une el hueco con un tramo recto.</li>
+        <li><b>Lectura</b> — al pasar el raton o el dedo sale la fecha, el cierre y el valor
+          de cada linea ese dia. Con teclado: tabula hasta el grafico y usa las flechas
+          izquierda y derecha.</li>
+      </ul>
+      <p>Todo esto describe el precio pasado, no lo pronostica. Los numeros estan tambien
+        como texto debajo, sin depender del raton.</p>`,
+  },
   acciones: {
     titulo: "Acciones",
     contenido: `<p>Ficha completa: cotizacion, fundamentales, historico, valoracion y nota.</p>
@@ -2108,6 +2411,7 @@ const HELP_CARD = {
         <li><b>Nota 1-10</b> — sintetiza siete pilares segun tu perfil inversor.</li>
         <li><b>Revision de Claude</b> — si se la pides, suma o resta hasta 2 puntos, con motivo y fuentes y siempre a la vista.</li>
         <li><b>Fundamentales</b> — PER, EV/EBITDA, margen, ROE, dividendo.</li>
+        <li><b>Grafico</b> — precio con sus ejes, medias, banda de Bollinger y panel de MACD.</li>
         <li><b>Historico 1 ano</b> — rentabilidad, volatilidad, RSI, medias moviles, ATR, Bollinger y MACD.</li>
         <li><b>Valoracion</b> — DCF con sensibilidad + Graham.</li>
         <li><b>Resultados trimestrales</b> — los 3 ultimos trimestres, de donde sale el pilar de resultados.</li>

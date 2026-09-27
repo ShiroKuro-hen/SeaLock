@@ -6,7 +6,9 @@ non-local Host or Origin are rejected.
 Usage:  python pruebas/prueba_web.py
 """
 
+import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -56,6 +58,98 @@ def _colors_outside_vars(css):
             continue
         loose.append(line.strip())
     return loose
+
+
+# The chart is client-side code, so the only way to check what it really draws is to run
+# it. node is optional: without it the render checks report AVISO instead of pretending.
+NODE = shutil.which("node") or shutil.which("nodejs")
+
+_HARNESS_JS = r"""const fs = require("fs"), vm = require("vm");
+const stub = () => ({
+  style: {}, dataset: {}, textContent: "", classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+  addEventListener() {}, removeEventListener() {}, setAttribute() {}, getAttribute() { return null; },
+  append() {}, appendChild() {}, focus() {}, contains() { return false; },
+  querySelector() { return null; }, querySelectorAll() { return []; },
+  getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+});
+const ctx = {
+  console,
+  window: { SEALOCK: { currency: "EUR", token: "t" }, addEventListener() {}, innerWidth: 1280, innerHeight: 900 },
+  document: {
+    addEventListener() {}, removeEventListener() {}, querySelectorAll() { return []; },
+    querySelector() { return null; }, getElementById() { return null; }, createElement: stub,
+    body: stub(), documentElement: { dataset: {}, style: {} },
+  },
+  localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+  setInterval() { return 0; }, requestAnimationFrame() { return 0; },
+};
+ctx.globalThis = ctx;
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx, { filename: "app.js" });
+ctx.FIXTURE = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
+process.stdout.write(String(vm.runInContext(process.argv[3], ctx)));
+"""
+
+
+def _render_app_js(expr, fixture):
+    """Runs an expression of app.js in node with a stub DOM and returns its output.
+
+    Returns None when node is missing and a diagnostic string when the run failed, so
+    the caller can fail or warn with something readable instead of an empty string.
+    """
+    if not NODE:
+        return None
+    harness = os.path.join(TEST_DIR, "render_app_js.js")
+    if not os.path.exists(harness):
+        with open(harness, "w", encoding="utf-8") as f:
+            f.write(_HARNESS_JS)
+    datos = os.path.join(TEST_DIR, "fixture-grafico.json")
+    with open(datos, "w", encoding="utf-8") as f:
+        json.dump(fixture, f)
+    try:
+        p = subprocess.run(
+            [NODE, harness, os.path.join(ROOT, "app", "web", "app.js"), expr, datos],
+            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT: node no termino en 60 s"
+    if p.returncode != 0:
+        return f"node fallo: {p.stderr.strip()[:300]}"
+    return p.stdout
+
+
+def _fixture_grafico():
+    """60 cierres con minimo, maximo y ultimo cierre conocidos, y las semillas de los
+    indicadores como null (49 para la media 50, 19 para Bollinger, 25 para el MACD),
+    igual que las devuelve historical()."""
+    precios = [100 + 3 * math.sin(i / 7.0) + i * 0.28 for i in range(60)]
+    precios[20], precios[40], precios[-1] = 95.0, 120.0, 112.0
+    fechas = [(datetime.date(2025, 9, 26) + datetime.timedelta(days=i)).isoformat()
+              for i in range(60)]
+
+    def con_fecha(vals, semilla):
+        return [{"date": f, "value": None if i < semilla else round(vals[i - semilla], 4)}
+                for i, f in enumerate(fechas)]
+
+    return {
+        "closes": [{"date": f, "close": round(c, 4)} for f, c in zip(fechas, precios)],
+        "sma_50_series": con_fecha(precios[49:], 49),
+        "sma_200_series": con_fecha([p * 1.05 for p in precios[59:]], 59),
+        "bollinger_upper_series": con_fecha([p * 1.06 for p in precios], 19),
+        "bollinger_lower_series": con_fecha([p * 0.94 for p in precios], 19),
+        "macd_series": [
+            {"date": f,
+             "macd": None if i < 25 else round(math.sin(i / 5.0) * 3, 4),
+             "signal": None if i < 33 else round(math.sin(i / 5.0) * 2.4, 4),
+             "histogram": None if i < 33 else round(math.cos(i / 5.0) * 1.2, 4)}
+            for i, f in enumerate(fechas)
+        ],
+    }
+
+
+def _puntos(svg, clase):
+    """Points of the first polyline or polygon with that class, as (x, y) tuples."""
+    m = re.search(rf'class="{clase}"[^>]*points="([^"]+)"', svg or "")
+    return [tuple(float(v) for v in q.split(",")) for q in m.group(1).split()] if m else []
 
 
 def request(path, data=None, token=None, headers=None):
@@ -483,12 +577,12 @@ try:
           "falta alguna etiqueta en app.js o su entrada en glosario.js")
 
     # HU-19: las cajas de carga dibujan un esqueleto con la forma del contenido, no
-    # un "Cargando…" suelto. Si alguien reintroduce el placeholder, esto falla.
+    # un "Cargandoâ€¦" suelto. Si alguien reintroduce el placeholder, esto falla.
     css = open(os.path.join(ROOT, "app", "web", "estilo.css"), encoding="utf-8").read()
     check("HU-19: helper de esqueleto usado en las cajas de carga",
           "function esqueleto(" in app_js and app_js.count("esqueleto(") >= 6,
           f"usos={app_js.count('esqueleto(')}")
-    check("HU-19: no queda ninguna caja con el placeholder 'Cargando…'",
+    check("HU-19: no queda ninguna caja con el placeholder 'Cargandoâ€¦'",
           'class="cargando"' not in app_js,
           "quedan placeholders class=cargando")
     check("HU-19: esqueleto con estilo y prefers-reduced-motion",
@@ -502,9 +596,9 @@ try:
     check("HU-16: los pilares se ordenan por peso, no por orden de llegada",
           ".sort((a, b) => (b.weight || 0) - (a.weight || 0))" in app_js,
           "no hay ordenacion de pilares por peso")
-    check("HU-16: la ficha pinta el sparkline del historico y las metricas de riesgo",
-          "sparklineSVG(h.closes" in app_js and 'metrica("Sharpe"' in app_js,
-          "la ficha no usa el sparkline o no muestra Sharpe")
+    check("HU-16: la ficha pinta la serie del historico y las metricas de riesgo",
+          "precioSVG(h" in app_js and 'metrica("Sharpe"' in app_js,
+          "la ficha no dibuja el historico o no muestra Sharpe")
     svg_imgs = app_js.count('role="img"')
     check("HU-16: toda grafica SVG trae role=img y texto alternativo",
           svg_imgs >= 3 and 'aria-label="Nota' in app_js,
@@ -517,6 +611,7 @@ try:
           str(r)[:200], critical=False)
     code, _ = request("/api/app/sparklines", {"tickers": ["AAPL"]})
     check("rechaza sparklines sin token", code == 403, f"codigo={code}")
+
 
     # HU-15: sistema de diseno y modo oscuro.
     with open(os.path.join(ROOT, "app", "web", "index.html"), encoding="utf-8") as f:
@@ -560,6 +655,99 @@ try:
     check("HU-29: la grafica se pinta con variables de color, no con hex sueltos",
           all(v in bloque_evo for v in ("var(--acento)", "var(--borde)"))
           and _colors_outside_vars(css) == [], str(_colors_outside_vars(css)))
+
+    # --- HU-35/HU-36: el grafico de precio de la ficha (epica 7) ---
+    bloque_precio = app_js.split("function precioSVG(")[1].split("function pintarPrecio(")[0] \
+        if "function precioSVG(" in app_js else ""
+    bloque_pintar = app_js.split("function pintarPrecio(")[1].split("function sparklineSVG(")[0] \
+        if "function pintarPrecio(" in app_js else ""
+    check("HU-35: existe precioSVG y la ficha ya no usa el sparkline de 280x56",
+          "function precioSVG(" in app_js and "sparklineSVG(h.closes" not in app_js
+          and "280, 56" not in app_js and "function sparklineSVG(" in app_js,
+          "falta precioSVG, la ficha sigue con el sparkline, o se borro la funcion")
+    check("HU-35: la caja de Comportamiento pinta el grafico y tiene su boton de ayuda",
+          'id="precio-grafico"' in app_js and "pintarPrecio(h, c)" in app_js
+          and 'data-section="precio"' in app_js and "precio: {" in app_js,
+          "falta la caja, la llamada a pintarPrecio o la ayuda")
+    caja_comp = app_js.split('id="precio-grafico"')[1].split("Valor intrinseco")[0] \
+        if 'id="precio-grafico"' in app_js else ""
+    check("HU-35: las 12 metricas siguen debajo del grafico, ahora como texto secundario",
+          caja_comp.count("${metrica(") == 12,
+          f"metricas={caja_comp.count('${metrica(')}")
+
+    fix = _fixture_grafico()
+    svg = _render_app_js("precioSVG(FIXTURE, {ancho: 517, alto: 210, moneda: 'EUR'})", fix)
+    critico = NODE is not None
+    check("HU-35: el SVG dibujado trae role=img y un aria-label con las cifras",
+          bool(svg) and 'role="img"' in svg
+          and re.search(r'aria-label="Grafico de precio: [^"]{30,}"', svg),
+          (svg or "sin node: no se pudo renderizar")[:200], critical=critico)
+    etiquetas = re.findall(r'<text class="p-y[^"]*"[^>]*>([^<]+)</text>', svg or "")
+    check("HU-35: el eje Y rotula minimo, maximo y ultimo cierre con el numero real",
+          {"95", "120", "112"} <= set(etiquetas), f"etiquetas={etiquetas}", critical=critico)
+    fechas_x = re.findall(r'<text class="p-x"[^>]*>([^<]+)</text>', svg or "")
+    check("HU-35: el eje X rotula la primera y la ultima fecha, en espanol y no en ISO",
+          len(fechas_x) == 2
+          and all(re.search(r"[a-záéíóú]{3,}\s\d{4}$", f) for f in fechas_x),
+          f"fechas={fechas_x}", critical=critico)
+    check("HU-35: responsive sin libreria (viewBox + width:100% + preserveAspectRatio)",
+          "viewBox=" in (svg or "") and 'preserveAspectRatio="xMidYMid meet"' in (svg or "")
+          and ".precio-svg, .macd-svg { display: block; width: 100%; height: auto; }" in css
+          and re.findall(r'<script src="([^"]+)"', index_html) == ["/glosario.js", "/app.js"],
+          "falta viewBox, preserveAspectRatio, el ancho al 100% o aparece una libreria")
+
+    # Una semilla null pintada como 0 caeria fuera del panel (con esta escala y(0) sale
+    # negativo): la linea tiene que empezar donde hay dato y ningun punto salirse.
+    cierre = _puntos(svg, "p-cierre")
+    sma = _puntos(svg, "p-sma50")
+    check("HU-36: la media 50 no se dibuja antes de su semilla (49 nulls), ni como 0",
+          bool(cierre) and len(sma) == 11 and sma[0][0] / cierre[0][0] > 0.7
+          and all(y > 0 for _, y in sma),
+          f"puntos={len(sma)} inicio={sma[0][0] if sma else 0}", critical=critico)
+    banda = _puntos(svg, "p-banda")
+    check("HU-36: la banda de Bollinger tampoco arranca en el primer dia (19 nulls)",
+          bool(banda) and banda[0][0] / cierre[0][0] > 0.2
+          and all(y > 0 for _, y in banda),
+          f"puntos={len(banda)} inicio={banda[0][0] if banda else 0}", critical=critico)
+    check("HU-36: banda y lineas con variables de color y relleno translucido, no rgba",
+          'class="p-banda"' in (svg or "") and "fill-opacity" in css
+          and "rgba(" not in (svg or "") and "#" not in (svg or "")
+          and all(c in bloque_precio for c in ("p-sma50", "p-sma200", "p-cierre")),
+          "el SVG trae color suelto o la banda no va con fill-opacity", critical=critico)
+
+    macd = _render_app_js("macdSVG(FIXTURE, {ancho: 517, moneda: 'EUR'})", fix)
+    check("HU-36: el panel de MACD tiene histograma, senal y linea de cero, con escala propia",
+          bool(macd) and 'class="p-hist-alza"' in macd and 'class="p-hist-baja"' in macd
+          and 'class="p-cero"' in macd and 'class="p-macd"' in macd and 'class="p-senal"' in macd
+          and macd.count("<svg") == 1
+          and re.search(r'aria-label="Panel de MACD[^"]{10,}"', macd),
+          (macd or "sin node: no se pudo renderizar")[:200], critical=critico)
+
+    check("HU-35: la cruceta se alcanza sin raton (foco + flechas) y con el dedo",
+          'tabindex="0"' in bloque_precio and "pointermove" in bloque_pintar
+          and "ArrowLeft" in bloque_pintar and "ArrowRight" in bloque_pintar
+          and "getBoundingClientRect" in bloque_pintar
+          and 'class="precio-lectura"' in app_js,
+          "falta el foco, las flechas o el puntero")
+    check("HU-35: los numeros existen tambien como texto, no solo dentro del SVG",
+          'class="precio-lectura"' in app_js and "Min." in bloque_pintar
+          and 'class="p-y' in bloque_precio and 'metrica("Bollinger %B"' in caja_comp,
+          "la lectura no se pinta fuera del SVG")
+    check("HU-36: las lineas del grafico tienen entrada de glosario (lo exige B4)",
+          all(s in app_js for s in ('data-glosario="Media 50"', 'data-glosario="Media 200"',
+                                    'data-glosario="Bandas de Bollinger"', 'data-glosario="Señal MACD"'))
+          and all(s in glosario_js for s in ('"Bandas de Bollinger"', 'titulo: "Señal MACD"')),
+          "falta una etiqueta del grafico o su entrada en el glosario")
+    bloque_css = css.split("grafico de precio de la ficha")[1].split(".veredicto {")[0] \
+        if "grafico de precio de la ficha" in css else ""
+    check("HU-35: la paleta del grafico vive en variables, sin hex ni rgba sueltos",
+          bool(bloque_css) and _colors_outside_vars(bloque_css) == []
+          and not re.search(r"font(-size)?:\s*[0-9.]+px", bloque_css)
+          and _colors_outside_vars(css) == [],
+          str(_colors_outside_vars(bloque_css)))
+    check("HU-15: la cruceta respeta prefers-reduced-motion",
+          "transition" in bloque_css and "prefers-reduced-motion" in css,
+          "falta la transicion o el permiso para quien pide menos movimiento")
 
 finally:
     proc.terminate()

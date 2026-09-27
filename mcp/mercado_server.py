@@ -576,12 +576,18 @@ def historical(ticker, date_range="1y", interval="1d", include_series=False):
     # see `mcp/FUENTE.md`). SMA keeps the exact value the hand-written mean had;
     # RSI now follows Wilder's smoothing instead of the plain average of the
     # last 14 returns — the difference is documented and pinned in the tests.
-    sma50 = indicators.SMA(50, closes).last()
-    sma200 = indicators.SMA(200, closes).last()
+    # The instances are kept, not just their `.last()`: HU-36 also returns the
+    # per-point series, which is the same computation read at every index.
+    sma50_ind = indicators.SMA(50, closes)
+    sma200_ind = indicators.SMA(200, closes)
+    sma50 = sma50_ind.last()
+    sma200 = sma200_ind.last()
     rsi = indicators.RSI(14, closes).last()
     atr = indicators.ATR(14, candles).last()
-    bb = indicators.BB(20, 2.0, closes).last()
-    macd = indicators.MACD(12, 26, 9, closes).last()
+    bb_ind = indicators.BB(20, 2.0, closes)
+    macd_ind = indicators.MACD(12, 26, 9, closes)
+    bb = bb_ind.last()
+    macd = macd_ind.last()
 
     def r4(v):
         return round(v, 4) if v is not None else None
@@ -623,6 +629,34 @@ def historical(ticker, date_range="1y", interval="1d", include_series=False):
         output["recent_closes"] = [
             {"date": f, "close": round(c, 4)} for f, c in series[-60:]
         ]
+        # HU-36: the indicators as series, index-aligned with `series` so the UI can
+        # draw them over the price. Seeds stay `None` (never 0) and the leading rows
+        # stay too: the chart skips a `None`, but it needs the index to match `closes`.
+        # Emitted only when every output is aligned: a shorter list would draw an
+        # indicator on the wrong date.
+        if all(len(x) == len(series) for x in (sma50_ind, sma200_ind, bb_ind, macd_ind)):
+            dates = [f for f, _ in series]
+            output["sma_50_series"] = [
+                {"date": f, "value": r4(v)} for f, v in zip(dates, sma50_ind)
+            ]
+            output["sma_200_series"] = [
+                {"date": f, "value": r4(v)} for f, v in zip(dates, sma200_ind)
+            ]
+            output["bollinger_upper_series"] = [
+                {"date": f, "value": r4(v.ub) if v else None} for f, v in zip(dates, bb_ind)
+            ]
+            output["bollinger_lower_series"] = [
+                {"date": f, "value": r4(v.lb) if v else None} for f, v in zip(dates, bb_ind)
+            ]
+            output["macd_series"] = [
+                {
+                    "date": f,
+                    "macd": r4(v.macd) if v else None,
+                    "signal": r4(v.signal) if v else None,
+                    "histogram": r4(v.histogram) if v else None,
+                }
+                for f, v in zip(dates, macd_ind)
+            ]
     return output
 
 

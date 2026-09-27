@@ -602,6 +602,46 @@ label.check input { width: auto; margin: 0; }
 .ev-leyenda i.ev-alza { background: var(--verde); }
 .ev-leyenda i.ev-baja { background: var(--rojo); }
 
+/* --- grafico de precio de la ficha (HU-35/HU-36) --- */
+.precio-svg, .macd-svg { display: block; width: 100%; height: auto; }
+.precio-svg text, .macd-svg text {
+  fill: var(--texto-tenue); font-size: var(--t-2xs); font-variant-numeric: tabular-nums;
+}
+.precio-svg .p-y-actual { fill: var(--texto); font-weight: 600; }
+.precio-svg .p-cierre { fill: none; stroke: var(--acento); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.precio-svg .p-cierre-fin { fill: var(--acento); }
+/* Las medias van por debajo del precio en peso y color: el precio manda. */
+.precio-svg .p-sma50 { fill: none; stroke: var(--acento); stroke-width: 1.2; stroke-dasharray: 5 3; opacity: 0.75; }
+.precio-svg .p-sma200 { fill: none; stroke: var(--texto-tenue); stroke-width: 1.2; }
+.precio-svg .p-banda { fill: var(--acento); fill-opacity: 0.1; stroke: none; }
+.precio-svg .p-banda-borde { fill: none; stroke: var(--borde); stroke-width: 1; }
+.precio-svg .p-rejilla, .macd-svg .p-rejilla { stroke: var(--borde); stroke-width: 1; }
+.macd-svg .p-cero { stroke: var(--borde); stroke-dasharray: 4 4; }
+.macd-svg .p-macd { fill: none; stroke: var(--acento); stroke-width: 1.4; }
+.macd-svg .p-senal { fill: none; stroke: var(--texto-tenue); stroke-width: 1.2; stroke-dasharray: 5 3; }
+.macd-svg .p-hist-alza { fill: var(--verde); }
+.macd-svg .p-hist-baja { fill: var(--rojo); }
+.precio-svg .p-cruz { opacity: 0; transition: opacity 0.12s; pointer-events: none; }
+.precio-svg.con-cruz .p-cruz { opacity: 1; }
+.precio-svg .p-cruz line { stroke: var(--texto-tenue); stroke-dasharray: 3 3; }
+.precio-svg .p-cruz circle { fill: var(--acento); stroke: var(--fondo-caja); stroke-width: 2; }
+
+.precio-lectura {
+  min-height: 1.4em; margin-top: 6px; font-size: var(--t-xs); color: var(--texto-tenue);
+  font-variant-numeric: tabular-nums;
+}
+.precio-leyenda { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 4px; font-size: var(--t-s); color: var(--texto-tenue); }
+#precio-leyenda { margin: 0 0 8px; }
+.precio-leyenda span { display: inline-flex; align-items: center; gap: 6px; }
+.precio-leyenda i { width: 16px; height: 0; border-top: 2px solid var(--acento); }
+.precio-leyenda i.lg-sma50 { border-top: 1px dashed var(--acento); }
+.precio-leyenda i.lg-sma200 { border-top: 1px solid var(--texto-tenue); }
+.precio-leyenda i.lg-banda {
+  height: 9px; border: 1px solid var(--borde);
+  background: color-mix(in srgb, var(--acento) 22%, transparent);
+}
+.precio-leyenda i.lg-senal { border-top: 1px dashed var(--texto-tenue); }
+
 .veredicto {
   background: var(--fondo-alt);
   border-left: 4px solid var(--borde);
