@@ -1,118 +1,142 @@
+<div align="center">
+
 # SeaLock
 
-Inversion en bolsa, en local, por perfil. Todo corre en este equipo: no hay cuenta,
-no hay nube, y los datos no salen de `datos/finanzas.db`. Sin bookkeeping personal:
-solo cartera, watchlist y una nota 1-10 de compra/venta ajustada a tu perfil inversor.
+**Local-first stock investing, scored for your investor profile.**
 
-## Abrir la aplicacion
+Track your portfolio and watchlist, and get a transparent 1–10 buy/sell score for any listed company — all on your own machine. No account, no cloud, no dependencies.
 
-Doble clic en **`SeaLock.bat`**. Se abre el navegador en http://127.0.0.1:8765 con
-cuatro pantallas: Acciones, Recomendaciones, Cartera y Ayuda.
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![Local first](https://img.shields.io/badge/data-stays%20on%20your%20machine-informational)
+![MCP](https://img.shields.io/badge/MCP-2%20servers-blueviolet)
 
-Para cerrarla, `Ctrl+C` en la ventana negra que queda abierta.
+<img src="docs/screenshots/01-portfolio.png" alt="SeaLock portfolio view with value, unrealised gain and portfolio evolution chart" width="900">
 
-Ademas de la interfaz, puedes hablar con Claude Code desde esta carpeta ("analiza
-Inditex", "he comprado 10 acciones de AAPL a 178") y usar los mismos datos. Interfaz y
-conversacion trabajan sobre la misma base de datos.
+</div>
 
-## Estado
+> The interface is in Spanish (it started as a personal tool); the code, API and docs are in English.
 
-Instalado y verificado. Python 3.12.10 puesto, y las dos baterias de pruebas en verde,
-incluidas las que salen a internet.
+## Why SeaLock
 
-```bash
-python pruebas/prueba_humo.py    # 262 checks: finance + market + scoring.py puro (incl. recomendaciones, Hidden Gems, metricas de cartera e indicadores tecnicos)
-python pruebas/prueba_web.py     # 111 checks: web API + defensas + B4 glosario + recomendaciones + Hidden Gems + indicadores + graficas SVG
-```
+- **Private by design.** Everything lives in a local SQLite file. The web server binds to `127.0.0.1` only, and market data is fetched with plain `GET` requests to public sources — your holdings are never sent anywhere.
+- **A score you can audit.** Every company gets a 1–10 note built from seven pillars (quality, valuation, financial strength, recent results, growth, momentum, dividend). Each metric, weight and source is visible — no black box.
+- **Tuned to *you*.** Pillar weights shift with your risk tolerance, horizon and income-vs-growth preference.
+- **Zero dependencies.** Standard-library Python only. No `pip install`, no build step, no frameworks in the frontend.
+- **Two ways in, one engine.** Use the web UI, or talk to it through [Claude Code](https://claude.com/claude-code) via two MCP servers and three skills. Both work on the same database.
 
-Usan bases de datos temporales, asi que no tocan tus datos reales.
+## Screenshots
 
-## Instalacion (en otro equipo)
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/02-stock-score.png" alt="Stock sheet with the 1-10 score and pillar breakdown"><br><sub><b>Score breakdown</b> — pillar sub-scores, pros and cons, data coverage.</sub></td>
+<td width="50%"><img src="docs/screenshots/03-price-chart.png" alt="Price chart with moving averages, Bollinger band and MACD"><br><sub><b>Price chart</b> — SMA 50/200, Bollinger band, MACD, Sharpe/Sortino/Calmar.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/04-compare.png" alt="Side-by-side comparison of three stocks"><br><sub><b>Compare</b> — 2 to 4 tickers side by side.</sub></td>
+<td width="50%"><img src="docs/screenshots/05-recommendations.png" alt="Recommendations: position advice and new ideas"><br><sub><b>Recommendations</b> — advice per position and new ideas from a blue-chip universe.</sub></td>
+</tr>
+</table>
 
-**Requisito unico: Python 3.9 o superior.** No hace falta instalar ningun paquete.
+*Screenshots use a throwaway demo portfolio, not real data.*
 
-```bash
-winget install -e --id Python.Python.3.12
-```
+## Features
 
-Cierra y reabre la terminal. Si `python` abre la Microsoft Store en vez de ejecutarse:
-Configuracion → Aplicaciones → Configuracion avanzada de aplicaciones → Alias de
-ejecucion de aplicaciones → desactiva `python.exe` y `python3.exe`.
-
-Por ultimo, reinicia Claude Code en esta carpeta para que cargue `.mcp.json`.
-
-## Las tres pantallas
-
-- **Cartera** — tu perfil inversor (riesgo, horizonte, preferencia), posiciones con
-  precio en vivo, plusvalia latente, peso de cada una y su Nota; watchlist.
-- **Acciones** — buscador, ficha con fundamentales, valoracion (DCF editable con tabla
-  de sensibilidad y formulas de Graham), noticias y la **Nota 1-10** de compra/venta.
-- **Ayuda** — primeros pasos, como se calcula la nota, glosario buscable, origen de
-  los datos, limites y backup.
-
-## Uso por conversacion
-
-Se habla en lenguaje natural; las skills se activan solas.
-
-| Lo que dices | Que ocurre |
+| Area | What you get |
 |---|---|
-| "he comprado 10 acciones de AAPL a 178" | Se registra en la cartera |
-| "analiza Inditex" | Ficha: precio, fundamentales, noticias, valoracion y nota |
-| "¿cuánto vale realmente Nvidia?" | DCF + Graham con tabla de sensibilidad |
-| "¿algo nuevo de mis acciones?" | Noticias filtradas por materialidad |
-| "pon mi perfil como agresivo, largo plazo" | Actualiza el perfil que pondera la nota |
+| **Stock sheet** | Quote with price age, fundamentals, news, DCF (editable assumptions + sensitivity table), Graham number, quarterly results, analyst estimate revisions, and the 1–10 score. |
+| **Portfolio** | Positions with average-cost P/L, weights, realised gains, multi-currency handling, export to CSV/JSON, and a point-in-time evolution curve versus a benchmark. |
+| **Recommendations** | Per-position action (hold, don't add, review thesis, consider selling) and new ideas scanned from Dow Jones + EURO STOXX 50 + IBEX 35. |
+| **Hidden Gems** | Background scan of small/mid caps worldwide (a local catalogue of ~44,600 symbols), cached across restarts. |
+| **Risk metrics** | Sharpe, Sortino, Calmar, max drawdown, volatility. The annualisation factor is derived from the actual dates, not assumed. |
+| **Technicals** | SMA/EMA, RSI (Wilder), ATR, Bollinger Bands, MACD — vendored from [talipp](https://github.com/nardew/talipp) (MIT). |
+| **Alerts** | Price, moving-average and RSI threshold alerts. They state a fact; they never tell you what to buy. |
+| **Light & dark themes** | Palette lives in CSS variables; contrast measured against WCAG AA. |
 
-## Que hay dentro
+## Quick start
 
-**Dos servidores MCP** (`mcp/`):
+**Requirement: Python 3.9 or newer.** Nothing else to install.
 
-- `finance` — 9 herramientas sobre SQLite local. Cartera (`trade_create`,
-  `portfolio_view`), watchlist, perfil inversor (`profile_get`/`profile_set`),
-  consultas SQL de solo lectura y copias de seguridad. **No accede a internet.**
-- `market` — 11 herramientas. Cotizaciones, historico con volatilidad y drawdown,
-  fundamentales, noticias, calendario de resultados, DCF, formulas de Graham, tipo de
-  cambio y `stock_score` (la nota 1-10, via `mcp/scoring.py`, un modulo puro sin red).
+```bash
+git clone https://github.com/ShiroKuro-hen/SeaLock.git
+cd SeaLock
+python app/servidor.py
+```
 
-**Tres skills** (`.claude/skills/`): `analizar-accion`, `valor-intrinseco`,
-`radar-noticias`.
+Then open <http://127.0.0.1:8765>. On Windows you can also double-click `SeaLock.bat`.
 
-## Datos
+Your data is created on first run in `datos/finanzas.db` (git-ignored). Set `SEALOCK_DATA` to keep it elsewhere and `SEALOCK_CURRENCY` to change the base currency (default `EUR`).
 
-Todo vive en `datos/finanzas.db`. Copia de seguridad: pide "haz una copia de
-seguridad" y se guarda en `datos/copias/`. **No subas `datos/` a ningun repositorio.**
+## Use it from Claude Code
 
-## Fuentes de mercado
+Open Claude Code in this folder; `.mcp.json` registers the two servers and the skills load automatically.
 
-Yahoo Finance (precios, fundamentales, noticias), Google News (noticias) y Stooq
-(respaldo de precios). Todas gratuitas y sin clave.
+| You say | What happens |
+|---|---|
+| "I bought 10 shares of AAPL at 178" | The trade is recorded in your portfolio |
+| "Analyse Inditex" | Quote, fundamentals, news, valuation and score |
+| "What is Nvidia really worth?" | DCF + Graham with a sensitivity table |
+| "Anything new on my stocks?" | News filtered by materiality |
+| "Set my profile to aggressive, long term" | Updates the profile that weights the score |
 
-**Limitacion conocida, verificada contra el mercado real:** Yahoo cubre mucho peor las
-empresas europeas. Para valores como `ITX.MC` no publica capitalizacion, numero de
-acciones ni flujo de caja libre. Los dos primeros se derivan por identidad contable y
-se marcan como derivados; el FCF no es derivable, asi que el DCF automatico no funciona
-en esos valores y hay que darle el dato del informe anual. Antes que inventarse una
-cifra, la herramienta falla diciendo exactamente que le falta. La nota lo refleja con
-menor `coverage_pct`.
+- **`finance`** — local SQLite only, **no network access**: trades, watchlist, investor profile, alerts, read-only SQL, backups.
+- **`market`** — public market data: quotes, history, fundamentals, news, earnings, DCF, Graham, FX, and `stock_score`.
+- **Skills** (`.claude/skills/`) — `analizar-accion`, `valor-intrinseco`, `radar-noticias`.
 
-Los fundamentales de Yahoo requieren ademas un token rotatorio y pueden dejar de
-funcionar en cualquier momento. Si eso pasa, da de alta una clave gratuita en
-[Finnhub](https://finnhub.io) o [FMP](https://financialmodelingprep.com) y anadela al
-bloque `env` del servidor `market` en `.mcp.json`.
+## How the score works
 
-## Como se calcula la nota
+`mcp/scoring.py` is a pure module (no network, no I/O). Each pillar yields metrics in `[-1, 1]`; the weights depend on your profile and sum to 100.
 
-`mcp/scoring.py` puntua cada accion de 1 a 10 sobre seis pilares (calidad, valoracion,
-solidez financiera, crecimiento, momentum, dividendo), cada uno con un peso que depende
-de tu perfil inversor. Tres senales de alerta limitan la nota a 3 (payout insostenible,
-deuda alta con beneficio cayendo, tendencia bajista de fondo con fundamentales
-deteriorandose). Detalle completo, pesos y fuentes (Buffett, Graham, Lynch, Greenblatt,
-Piotroski, AQR, Jegadeesh-Titman) en `CLAUDE.md`, seccion "Criterios de la nota".
+| Pillar | Moderate weight | Metrics |
+|---|---|---|
+| Quality | 25 | ROE, net/operating margin, ROA |
+| Valuation | 25 | P/E, PEG, EV/EBITDA, P/B, DCF and Graham margin, analyst target (half weight) |
+| Financial strength | 15 | Debt/equity, current ratio, net debt/EBITDA, free-cash-flow sign |
+| Recent results | 15 | YoY sales and EPS growth, margin change, consistency, EPS surprise |
+| Growth | 8 | YoY sales and earnings growth |
+| Momentum | 7 | Price vs 50/200-day averages, 12-month return, RSI, MACD, Bollinger %B, ATR |
+| Dividend | 5 | Yield, payout |
 
-**Es una puntuacion mecanica sobre reglas fijas y datos publicos, no asesoramiento de
-un profesional con licencia. La decision es siempre tuya.**
+Pillars with no data are dropped and their weight is redistributed; coverage under 50% raises a warning. Four red flags cap the score at 3 (unsustainable payout, high leverage with falling profits, long-term downtrend with deteriorating fundamentals, three straight quarters of falling sales).
 
-## Aviso
+Criteria draw on Buffett, Graham, Lynch, Greenblatt, Piotroski, AQR's quality-minus-junk and Jegadeesh–Titman momentum. Analyst consensus is only a weak tie-breaker, because sell-side optimism bias is well documented. Full details are in [`CLAUDE.md`](CLAUDE.md#criterios-de-la-nota).
 
-Herramienta de uso personal. Los precios pueden ir con ~15 minutos de retraso y los
-fundamentales proceden de fuentes publicas que pueden contener errores. Nada de lo que
-produce es asesoramiento financiero.
+> **No look-ahead.** Every historical series and portfolio curve follows a strict point-in-time rule: a signal computed on day T is only acted on at T+1, and portfolio metrics use the position *as it was on that date*.
+
+## Project layout
+
+```
+SeaLock/
+├─ app/            Local HTTP server + JSON API, and the vanilla-JS frontend (app/web)
+├─ mcp/            MCP servers (finance, market), scoring engine, indicators, metrics, symbol catalogue
+├─ recursos/       Stock universe and the worldwide symbol catalogue
+├─ .claude/skills/ Claude Code skills
+├─ pruebas/        End-to-end test suites
+├─ docs/           Plan and repo research, screenshots
+└─ datos/          Your database and backups (git-ignored, never share)
+```
+
+The web layer does not duplicate logic: it imports the MCP modules and calls their functions, so any new MCP tool is automatically available over the API.
+
+## Security and privacy
+
+- Binds to `127.0.0.1` only.
+- A random per-launch token is required for every `/api` call, and non-local `Host`/`Origin` headers are rejected, so other browser tabs cannot reach it (DNS rebinding).
+- `finance` has no network code at all; `market` only issues `GET` requests and never sends your data.
+
+## Tests
+
+```bash
+python pruebas/prueba_humo.py   # MCP servers + scoring, metrics and indicators
+python pruebas/prueba_web.py    # web API, security defences, UI rendering
+```
+
+Both use temporary databases and never touch your real data. Network failures are reported as warnings, not failures.
+
+## Data sources
+
+Yahoo Finance (prices, fundamentals, news), Google News (news) and Stooq (price fallback) — all free, no API key. Coverage of European companies on Yahoo is noticeably worse (no market cap, share count or free cash flow for tickers like `ITX.MC`); SeaLock derives what it can, marks it as derived, and otherwise fails loudly instead of inventing a number. If Yahoo tightens access, add a free [Finnhub](https://finnhub.io) or [FMP](https://financialmodelingprep.com) key to the `market` server's `env` block in `.mcp.json`.
+
+## Disclaimer
+
+SeaLock is a personal tool. The score is a **mechanical rule-based rating on public data, not financial advice** and not the opinion of a licensed professional. Prices may be delayed ~15 minutes and fundamentals may contain errors. The decision is always yours.
