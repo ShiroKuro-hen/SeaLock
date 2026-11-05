@@ -58,7 +58,7 @@ Track your portfolio and watchlist, and get a transparent 1–10 buy/sell score 
 **Requirement: Python 3.9 or newer.** Nothing else to install.
 
 ```bash
-git clone https://github.com/ShiroKuro-hen/SeaLock.git
+git clone https://github.com/EduardoSanandresRojas/SeaLock.git
 cd SeaLock
 python app/servidor.py
 ```
